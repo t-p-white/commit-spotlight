@@ -1,0 +1,88 @@
+<idea-plugin>
+    <id>com.twhite.commitspotlight</id>
+    <name>Commit Spotlight</name>
+    <vendor>twhite</vendor>
+
+    <description><![CDATA[
+        <p>See exactly what a commit touched, at a glance. Ever click through a commit in the
+        Git Log and wonder exactly which lines it actually changed? Commit Spotlight highlights
+        it for you — directly in your editor and across the commit's row in the Git Log — in a
+        color you choose.</p>
+
+        <p><b>Highlight any commit's changes</b><br/>
+        Select one or more commits in the Git Log and highlight the lines they added, changed,
+        or deleted, instantly, in any open editor.</p>
+
+        <p><b>Deletions you can actually see</b><br/>
+        There's no line left to highlight when something's deleted — so Commit Spotlight marks
+        the spot with a colored divider and an inline label. Hover it to see exactly what was
+        removed.</p>
+
+        <p><b>Color-code your investigation</b><br/>
+        Pick from 8 colors with adjustable opacity. Highlight different commits in different
+        colors to visually separate what each one touched, and re-color any of them afterward
+        without starting over.</p>
+
+        <p><b>Full-row highlighting in the Git Log</b><br/>
+        Highlighted commits are tinted across their entire row in the log, not just in the
+        editor — so the color-coding works both ways.</p>
+
+        <p><b>Filter to just what matters</b><br/>
+        Flip on "Show Only Highlighted Commits" to collapse the Git Log down to exactly the
+        commits you're tracking.</p>
+
+        <p><b>One click to open everything a commit touched</b><br/>
+        Jump straight to every file a commit changed, without hunting through the diff.</p>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>Git4Idea</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <projectService serviceImplementation="com.twhite.commitspotlight.CommitHighlightService"/>
+        <applicationService serviceImplementation="com.twhite.commitspotlight.CommitHighlighterSettings"/>
+        <logHighlighterFactory implementation="com.twhite.commitspotlight.SelectedCommitLogHighlighterFactory"/>
+        <notificationGroup id="CommitSpotlight.Notifications" displayType="BALLOON"/>
+    </extensions>
+
+    <actions>
+        <group id="CommitSpotlight.ActionGroup" text="Commit Spotlight" popup="true" icon="AllIcons.Actions.Highlighting">
+            <action id="CommitSpotlight.HighlightSelected"
+                    class="com.twhite.commitspotlight.HighlightSelectedCommitsAction"
+                    text="Highlight Changes From Selected Commit(s)"
+                    description="Highlight, in any open editor, the lines changed by the selected commit(s)"
+                    icon="AllIcons.Actions.Highlighting"/>
+            <group id="CommitSpotlight.ColorGroup"
+                   text="Highlight Color"
+                   popup="true"
+                   icon="AllIcons.Actions.Colors"
+                   class="com.twhite.commitspotlight.ChangeHighlightColorActionGroup"/>
+            <group id="CommitSpotlight.AlphaGroup"
+                   text="Highlight Opacity"
+                   popup="true"
+                   icon="AllIcons.General.GearPlain"
+                   class="com.twhite.commitspotlight.ChangeHighlightAlphaActionGroup"/>
+            <action id="CommitSpotlight.ClearSelectedHighlights"
+                    class="com.twhite.commitspotlight.ClearSelectedCommitHighlightsAction"
+                    text="Clear Highlight for Selected Commit(s)"
+                    description="Remove commit-change highlights only for the currently selected commit(s)"
+                    icon="AllIcons.Actions.Cancel"/>
+            <action id="CommitSpotlight.ClearHighlights"
+                    class="com.twhite.commitspotlight.ClearCommitHighlightsAction"
+                    text="Clear All Commit Highlights"
+                    description="Remove all commit-change highlights from every open editor"
+                    icon="AllIcons.Actions.GC"/>
+            <action id="CommitSpotlight.ToggleShowOnlyHighlighted"
+                    class="com.twhite.commitspotlight.ToggleShowOnlyHighlightedAction"
+                    text="Show Only Highlighted Commits in Git Log"
+                    description="Filter the Git Log to show only currently highlighted commits"
+                    icon="AllIcons.General.Filter"/>
+            <action id="CommitSpotlight.OpenChangedFiles"
+                    class="com.twhite.commitspotlight.OpenChangedFilesAction"
+                    text="Open All Files in Commit"
+                    description="Open every file touched by the currently selected commit(s)"
+                    icon="AllIcons.Actions.OpenNewTab"/>
+            <add-to-group group-id="Vcs.Log.ContextMenu" anchor="first"/>
+        </group>
+    </actions>
+</idea-plugin>

@@ -26,13 +26,18 @@ commit touched — in colors you pick.
 - **Deleted lines get a marker, not a guess** — since there's no surviving line to tint, deletions
   show as a colored divider with an inline "N lines deleted" label; hover it (or the right-hand
   gutter mark) to see the actual removed text.
-- **Modified lines show what they used to say** — a "was N line(s)" label appears at the end of
+- **Modified lines show what they used to say** — a "was N line(s)" pill appears at the end of
   the first line of each modified block; hover it (or the right-hand gutter mark on any line in
   the block) to see the text it replaced.
+- **Rounded highlight blocks** — a contiguous run of changed lines renders as a single
+  rounded-corner background block instead of a stack of sharp-edged rows.
 - **8 colors, your choice** — picked per highlight run. Re-pick a color for an already-highlighted
   commit and it updates immediately, without re-running anything.
 - **Adjustable opacity** — one global opacity setting applies to every color, so highlights blend
   with the editor background instead of reading as a flat, fully-opaque fill.
+- **Choose which commit wins on overlapping lines** — when two highlighted commits touch the
+  same line, "Prioritize Newest Commit on Overlapping Lines" decides whether the chronologically
+  newest commit wins, or whichever was highlighted most recently (the default).
 - **Full-row Git Log highlighting** — highlighted commits are tinted across their entire row in
   the log, not just in the editor.
 - **Show only highlighted commits** — filter the Git Log down to just what you've highlighted.

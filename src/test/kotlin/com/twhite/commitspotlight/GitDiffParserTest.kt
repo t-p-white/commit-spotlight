@@ -93,6 +93,49 @@ class GitDiffParserTest {
     }
 
     @Test
+    fun `modifying a line records the old text at the changed line's number`() {
+        writeFile("a.txt", "one\ntwo\nthree\n")
+        commitAll("initial")
+        writeFile("a.txt", "one\nTWO\nthree\n")
+        val hash = commitAll("modify line 2")
+
+        val info = GitDiffParser.changedLinesForCommits(repo, listOf(hash))["a.txt"]!!
+        val modification = info.modificationAnchors[2]
+
+        assertNotNull(modification)
+        assertEquals(1, modification!!.count)
+        assertEquals(listOf("two"), modification.lines)
+    }
+
+    @Test
+    fun `a hunk collapsing multiple old lines into fewer new ones anchors old text to the first new line`() {
+        writeFile("a.txt", "one\ntwo\nthree\nfour\n")
+        commitAll("initial")
+        writeFile("a.txt", "one\nTWO-THREE\nfour\n")
+        val hash = commitAll("collapse two lines into one")
+
+        val info = GitDiffParser.changedLinesForCommits(repo, listOf(hash))["a.txt"]!!
+        val modification = info.modificationAnchors[2]
+
+        assertEquals(setOf(2), info.changedLines)
+        assertNotNull(modification)
+        assertEquals(2, modification!!.count)
+        assertEquals(listOf("two", "three"), modification.lines)
+    }
+
+    @Test
+    fun `a pure addition has no modification anchor`() {
+        writeFile("a.txt", "one\n")
+        commitAll("initial")
+        writeFile("a.txt", "one\ntwo\nthree\n")
+        val hash = commitAll("add lines")
+
+        val info = GitDiffParser.changedLinesForCommits(repo, listOf(hash))["a.txt"]!!
+
+        assertTrue(info.modificationAnchors.isEmpty())
+    }
+
+    @Test
     fun `multiple commits are unioned and deletion counts summed`() {
         writeFile("a.txt", "one\ntwo\nthree\nfour\nfive\n")
         commitAll("initial")

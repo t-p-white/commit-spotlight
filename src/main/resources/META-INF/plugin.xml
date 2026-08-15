@@ -62,6 +62,7 @@
                    popup="true"
                    icon="AllIcons.General.GearPlain"
                    class="com.twhite.commitspotlight.ChangeHighlightAlphaActionGroup"/>
+            <separator/>
             <action id="CommitSpotlight.ClearSelectedHighlights"
                     class="com.twhite.commitspotlight.ClearSelectedCommitHighlightsAction"
                     text="Clear Highlight for Selected Commit(s)"
@@ -72,11 +73,18 @@
                     text="Clear All Commit Highlights"
                     description="Remove all commit-change highlights from every open editor"
                     icon="AllIcons.Actions.GC"/>
+            <separator/>
             <action id="CommitSpotlight.ToggleShowOnlyHighlighted"
                     class="com.twhite.commitspotlight.ToggleShowOnlyHighlightedAction"
                     text="Show Only Highlighted Commits in Git Log"
                     description="Filter the Git Log to show only currently highlighted commits"
                     icon="AllIcons.General.Filter"/>
+            <action id="CommitSpotlight.TogglePrioritizeNewestCommit"
+                    class="com.twhite.commitspotlight.TogglePrioritizeNewestCommitAction"
+                    text="Prioritize Newest Commit on Overlapping Lines"
+                    description="Decides which commit wins when two highlighted commits touch the same line. Off (default): whichever commit you highlighted most recently wins, regardless of its actual commit date. On: whichever commit is chronologically newest wins, regardless of the order you highlighted them in."
+                    icon="AllIcons.General.ArrowUp"/>
+            <separator/>
             <action id="CommitSpotlight.OpenChangedFiles"
                     class="com.twhite.commitspotlight.OpenChangedFilesAction"
                     text="Open All Files in Commit"

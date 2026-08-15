@@ -1,10 +1,17 @@
 package com.twhite.commitspotlight
 
+import com.intellij.codeInsight.hints.presentation.InlayPresentation
+import com.intellij.codeInsight.hints.presentation.InsetPresentation
+import com.intellij.codeInsight.hints.presentation.PillWithBackgroundPresentation
 import com.intellij.codeInsight.hints.presentation.PresentationFactory
 import com.intellij.codeInsight.hints.presentation.PresentationRenderer
+import com.intellij.codeInsight.hints.presentation.WithAttributesPresentation
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.editor.DefaultLanguageHighlighterColors
+import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.Inlay
 import com.intellij.openapi.editor.InlayProperties
+import com.intellij.openapi.editor.markup.CustomHighlighterRenderer
 import com.intellij.openapi.editor.markup.HighlighterLayer
 import com.intellij.openapi.editor.markup.HighlighterTargetArea
 import com.intellij.openapi.editor.markup.MarkupModel
@@ -17,11 +24,14 @@ import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.ui.JBColor
+import com.intellij.util.ui.JBUI
 import com.intellij.vcs.log.Hash
 import com.intellij.vcs.log.impl.VcsProjectLog
 import com.intellij.vcs.log.ui.MainVcsLogUi
 import com.intellij.vcs.log.visible.filters.VcsLogFilterObject
-import java.awt.Font
+import java.awt.Graphics
+import java.awt.Graphics2D
+import java.awt.RenderingHints
 import java.io.File
 import java.lang.ref.WeakReference
 
@@ -30,6 +40,34 @@ private data class HighlightBatch(
     val hashes: Set<Hash>,
     val diffInfoByPath: Map<String, FileDiffInfo>
 )
+
+/**
+ * Paints one contiguous run of same-colored changed lines as a single rounded rectangle
+ * spanning the full editor width, rather than relying on [TextAttributes]' background (which
+ * only ever paints sharp corners) — so a multi-line block reads as one rounded card instead of
+ * a stack of separately-cornered rows.
+ */
+private class RoundedLineBackgroundRenderer(
+    private val firstZeroBasedLine: Int,
+    private val lastZeroBasedLine: Int,
+    private val color: JBColor
+) : CustomHighlighterRenderer {
+
+    override fun paint(editor: Editor, highlighter: RangeHighlighter, g: Graphics) {
+        val document = editor.document
+        if (firstZeroBasedLine < 0 || lastZeroBasedLine >= document.lineCount) return
+
+        val topY = editor.offsetToXY(document.getLineStartOffset(firstZeroBasedLine)).y
+        val bottomY = editor.offsetToXY(document.getLineStartOffset(lastZeroBasedLine)).y + editor.lineHeight
+        val width = editor.contentComponent.width
+        val arc = JBUI.scale(8)
+
+        val g2 = g as Graphics2D
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        g2.color = color
+        g2.fillRoundRect(0, topY, width, bottomY - topY, arc, arc)
+    }
+}
 
 /** Diff info recomputed for each half of a batch being split by [CommitHighlightService.recolorCommits]. */
 data class RecolorSplit(
@@ -48,6 +86,10 @@ class CommitHighlightService(private val project: Project) : Disposable {
 
     private var repoRoot: File? = null
     private val batches = mutableListOf<HighlightBatch>()
+
+    // Only ever grows: split/recolor operations reuse hashes already highlighted once, so their
+    // timestamps stay valid without needing to be re-supplied.
+    private val commitTimestamps = mutableMapOf<Hash, Long>()
 
     private val appliedHighlighters = mutableMapOf<VirtualFile, MutableList<TrackedHighlight>>()
     private val appliedInlays = mutableMapOf<VirtualFile, MutableList<Inlay<*>>>()
@@ -69,9 +111,11 @@ class CommitHighlightService(private val project: Project) : Disposable {
         newRepoRoot: File,
         diffInfoByPath: Map<String, FileDiffInfo>,
         hashes: Set<Hash>,
-        color: HighlightColor
+        color: HighlightColor,
+        commitTimestamps: Map<Hash, Long> = emptyMap()
     ) {
         repoRoot = newRepoRoot
+        this.commitTimestamps.putAll(commitTimestamps)
         batches.add(HighlightBatch(color, hashes, diffInfoByPath))
         reapplyAllEditors()
         repaintLogTable()
@@ -234,7 +278,15 @@ class CommitHighlightService(private val project: Project) : Disposable {
 
         val lineColors = linkedMapOf<Int, HighlightColor>()
         val deletionInfo = linkedMapOf<Int, Pair<HighlightColor, DeletedLines>>()
-        for (batch in batches) {
+        val modificationInfo = linkedMapOf<Int, Pair<HighlightColor, DeletedLines>>()
+        // Iteration order decides which batch's color/tooltip wins on a line multiple batches
+        // touch — the last one processed overwrites earlier ones in the maps below.
+        val orderedBatches = if (CommitHighlighterSettings.getInstance().prioritizeNewestCommit) {
+            batches.sortedBy { batch -> batch.hashes.maxOfOrNull { commitTimestamps[it] ?: 0L } ?: 0L }
+        } else {
+            batches
+        }
+        for (batch in orderedBatches) {
             val info = batch.diffInfoByPath[relativePath] ?: continue
             for (line in info.changedLines) {
                 lineColors[line] = batch.color
@@ -242,8 +294,11 @@ class CommitHighlightService(private val project: Project) : Disposable {
             for ((anchor, deleted) in info.deletionAnchors) {
                 deletionInfo[anchor] = batch.color to deleted
             }
+            for ((anchor, oldText) in info.modificationAnchors) {
+                modificationInfo[anchor] = batch.color to oldText
+            }
         }
-        if (lineColors.isEmpty() && deletionInfo.isEmpty()) return
+        if (lineColors.isEmpty() && deletionInfo.isEmpty() && modificationInfo.isEmpty()) return
 
         val textEditor = FileEditorManager.getInstance(project).getEditors(file)
             .filterIsInstance<TextEditor>()
@@ -256,26 +311,48 @@ class CommitHighlightService(private val project: Project) : Disposable {
         val inlays = mutableListOf<Inlay<*>>()
         val presentationFactory = PresentationFactory(editor)
 
-        for ((lineNumber, color) in lineColors) {
-            val zeroBasedLine = lineNumber - 1
-            if (zeroBasedLine < 0 || zeroBasedLine >= document.lineCount) continue
-            val startOffset = document.getLineStartOffset(zeroBasedLine)
+        // Grouped into contiguous same-color runs so a multi-line change renders as one rounded
+        // card (via RoundedLineBackgroundRenderer) instead of a stack of individually-cornered rows.
+        val validLines = lineColors.keys.filter { it - 1 in 0 until document.lineCount }.sorted()
+        var runStart = -1
+        var runEnd = -1
+        var runColor: HighlightColor? = null
+
+        fun flushRun() {
+            val color = runColor ?: return
+            val startOffset = document.getLineStartOffset(runStart - 1)
             // Extending past the last character to include the line break (where there is one)
             // is what makes the background paint the full editor width instead of stopping at
             // the last character — EXACT_RANGE alone only covers the actual text.
-            val endOffset = (document.getLineEndOffset(zeroBasedLine) + 1).coerceAtMost(document.textLength)
+            val endOffset = (document.getLineEndOffset(runEnd - 1) + 1).coerceAtMost(document.textLength)
 
             val highlighter = markupModel.addRangeHighlighter(
                 startOffset,
                 endOffset,
                 HighlighterLayer.SELECTION - 1,
-                TextAttributes(null, color.toJBColor(), null, null, Font.PLAIN),
+                TextAttributes(),
                 HighlighterTargetArea.EXACT_RANGE
             )
+            highlighter.customRenderer = RoundedLineBackgroundRenderer(runStart - 1, runEnd - 1, color.toJBColor())
             highlighter.setErrorStripeMarkColor(color.toJBColor())
-            highlighter.errorStripeTooltip = "Changed by a highlighted commit"
+            val oldText = modificationInfo[runStart]?.second
+            highlighter.errorStripeTooltip =
+                if (oldText != null) buildOldTextTooltip(oldText) else "Changed by a highlighted commit"
             tracked.add(TrackedHighlight(markupModel, highlighter))
         }
+
+        for (lineNumber in validLines) {
+            val color = lineColors.getValue(lineNumber)
+            if (runColor != null && lineNumber == runEnd + 1 && color == runColor) {
+                runEnd = lineNumber
+            } else {
+                flushRun()
+                runStart = lineNumber
+                runEnd = lineNumber
+                runColor = color
+            }
+        }
+        flushRun()
 
         val lineCount = document.lineCount
         for ((anchor, colorAndDeleted) in deletionInfo) {
@@ -305,7 +382,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
             )
             highlighter.lineSeparatorColor = color.toJBColor()
             highlighter.lineSeparatorPlacement = placement
-            val tooltipHtml = buildDeletionTooltip(deleted)
+            val tooltipHtml = buildOldTextTooltip(deleted)
             highlighter.setErrorStripeMarkColor(color.toJBColor())
             highlighter.setThinErrorStripeMark(true)
             highlighter.errorStripeTooltip = tooltipHtml
@@ -313,11 +390,32 @@ class CommitHighlightService(private val project: Project) : Disposable {
 
             val inlayOffset = if (showAbove) separatorOffset else document.getLineEndOffset(zeroBasedLine)
             val label = "$count ${if (count == 1) "line" else "lines"} deleted"
-            val labelPresentation = presentationFactory.roundWithBackground(presentationFactory.smallText(label))
+            val labelPresentation = pillWithBackground(editor, presentationFactory.smallText(label))
             val presentation = presentationFactory.withTooltip(tooltipHtml, labelPresentation)
             val inlay = editor.inlayModel.addBlockElement(
                 inlayOffset,
                 InlayProperties().showAbove(showAbove),
+                PresentationRenderer(presentation)
+            )
+            if (inlay != null) {
+                inlays.add(inlay)
+            }
+        }
+
+        for ((anchor, colorAndOldText) in modificationInfo) {
+            val (_, oldText) = colorAndOldText
+            val zeroBasedLine = anchor - 1
+            if (zeroBasedLine < 0 || zeroBasedLine >= lineCount) continue
+
+            val count = oldText.count
+            val label = "was $count ${if (count == 1) "line" else "lines"}"
+            val tooltipHtml = buildOldTextTooltip(oldText)
+            val labelPresentation = pillWithBackground(editor, presentationFactory.smallText(label))
+            val presentation = presentationFactory.withTooltip(tooltipHtml, labelPresentation)
+            val inlayOffset = document.getLineEndOffset(zeroBasedLine)
+            val inlay = editor.inlayModel.addInlineElement(
+                inlayOffset,
+                true,
                 PresentationRenderer(presentation)
             )
             if (inlay != null) {
@@ -354,7 +452,28 @@ class CommitHighlightService(private val project: Project) : Disposable {
         }
     }
 
-    private fun buildDeletionTooltip(deleted: DeletedLines): String {
+    /**
+     * [PresentationFactory.roundWithBackground] rounds with a small fixed corner radius and its
+     * vertical-centering hook lives behind an internal API we can't reach. This reproduces its
+     * theming — the same [DefaultLanguageHighlighterColors.INLAY_DEFAULT] background/foreground —
+     * around [PillWithBackgroundPresentation] (whose corner radius auto-matches its own height,
+     * giving a true pill), with generous padding around the text and an outer top inset to
+     * vertically center the whole badge against the surrounding line of code.
+     */
+    private fun pillWithBackground(editor: Editor, base: InlayPresentation): InlayPresentation {
+        val padded = InsetPresentation(base, 10, 10, 3, 3)
+        val pill = PillWithBackgroundPresentation(padded)
+        val attributed = WithAttributesPresentation(
+            pill,
+            DefaultLanguageHighlighterColors.INLAY_DEFAULT,
+            editor,
+            WithAttributesPresentation.AttributesFlags().withIsDefault(true)
+        )
+        val verticalOffset = ((editor.lineHeight - attributed.height) / 2).coerceAtLeast(0)
+        return InsetPresentation(attributed, 0, 0, verticalOffset, 0)
+    }
+
+    private fun buildOldTextTooltip(deleted: DeletedLines): String {
         val maxLines = 40
         val shown = deleted.lines.take(maxLines)
         val body = shown.joinToString("\n") { escapeHtml(it) }

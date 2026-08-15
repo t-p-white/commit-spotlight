@@ -12,6 +12,7 @@ class CommitHighlighterSettings : PersistentStateComponent<CommitHighlighterSett
     class State {
         var colorId: String = CommitHighlighterColors.DEFAULT.id
         var alphaPercent: Int = 50
+        var prioritizeNewestCommit: Boolean = false
     }
 
     private var state = State()
@@ -30,6 +31,17 @@ class CommitHighlighterSettings : PersistentStateComponent<CommitHighlighterSett
 
     val color: HighlightColor
         get() = CommitHighlighterColors.byId(state.colorId)
+
+    /**
+     * When two highlighted commits touch the same line: false (default) means whichever commit
+     * was *highlighted* most recently wins; true means whichever commit is chronologically
+     * *newest* wins, regardless of the order they were highlighted in.
+     */
+    var prioritizeNewestCommit: Boolean
+        get() = state.prioritizeNewestCommit
+        set(value) {
+            state.prioritizeNewestCommit = value
+        }
 
     override fun getState(): State = state
 

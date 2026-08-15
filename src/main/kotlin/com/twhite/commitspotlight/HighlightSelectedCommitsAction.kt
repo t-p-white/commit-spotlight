@@ -38,6 +38,9 @@ class HighlightSelectedCommitsAction : AnAction() {
         val hashStrings = commits.map { it.hash.asString() }
         val hashes = commits.map { it.hash }.toSet()
         val color = CommitHighlighterSettings.getInstance().color
+        // Used only when "prioritize newest commit" is on; falls back to 0 for any commit whose
+        // metadata isn't cached yet, which just excludes it from ever winning that comparison.
+        val commitTimestamps = selection.cachedMetadata.associate { it.id to it.timestamp }
 
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Computing Commit Diffs", true) {
             override fun run(indicator: ProgressIndicator) {
@@ -57,7 +60,7 @@ class HighlightSelectedCommitsAction : AnAction() {
                             .notify(project)
                     } else {
                         project.getService(CommitHighlightService::class.java)
-                            .addHighlightBatch(repoRoot, diffInfo, hashes, color)
+                            .addHighlightBatch(repoRoot, diffInfo, hashes, color, commitTimestamps)
                     }
                 }
             }

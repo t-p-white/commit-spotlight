@@ -12,10 +12,17 @@ data class DeletedLines(val count: Int, val lines: List<String>)
  * hunk occurred (0 means "before line 1") to what was removed there, per git's
  * unified-diff convention for hunks with a zero new-side count. There's no
  * surviving line to background-tint, so callers draw a separator/label instead.
+ *
+ * `modificationAnchors` maps the first "new file" line number of a hunk that
+ * replaced existing lines (both an old-side and new-side count > 0) to the
+ * text that used to be there. Unlike deletions, every line in the hunk's new
+ * range still exists and is tinted via [changedLines]; the anchor is just
+ * where callers attach a "what this used to say" marker.
  */
 data class FileDiffInfo(
     val changedLines: Set<Int> = emptySet(),
-    val deletionAnchors: Map<Int, DeletedLines> = emptyMap()
+    val deletionAnchors: Map<Int, DeletedLines> = emptyMap(),
+    val modificationAnchors: Map<Int, DeletedLines> = emptyMap()
 )
 
 /**
@@ -31,6 +38,7 @@ object GitDiffParser {
     fun changedLinesForCommits(repoRoot: File, commitHashes: List<String>): Map<String, FileDiffInfo> {
         val changed = mutableMapOf<String, MutableSet<Int>>()
         val deletions = mutableMapOf<String, MutableMap<Int, DeletedLines>>()
+        val modifications = mutableMapOf<String, MutableMap<Int, DeletedLines>>()
         for (hash in commitHashes) {
             val patch = runGitShow(repoRoot, hash) ?: continue
             val parsed = parsePatch(patch)
@@ -39,19 +47,25 @@ object GitDiffParser {
                     changed.getOrPut(path) { mutableSetOf() }.addAll(info.changedLines)
                 }
                 if (info.deletionAnchors.isNotEmpty()) {
-                    val map = deletions.getOrPut(path) { mutableMapOf() }
-                    for ((anchor, deleted) in info.deletionAnchors) {
-                        val existing = map[anchor]
-                        map[anchor] = DeletedLines(
-                            (existing?.count ?: 0) + deleted.count,
-                            (existing?.lines ?: emptyList()) + deleted.lines
-                        )
-                    }
+                    mergeAnchors(deletions.getOrPut(path) { mutableMapOf() }, info.deletionAnchors)
+                }
+                if (info.modificationAnchors.isNotEmpty()) {
+                    mergeAnchors(modifications.getOrPut(path) { mutableMapOf() }, info.modificationAnchors)
                 }
             }
         }
-        return (changed.keys + deletions.keys).associateWith { path ->
-            FileDiffInfo(changed[path] ?: emptySet(), deletions[path] ?: emptyMap())
+        return (changed.keys + deletions.keys + modifications.keys).associateWith { path ->
+            FileDiffInfo(changed[path] ?: emptySet(), deletions[path] ?: emptyMap(), modifications[path] ?: emptyMap())
+        }
+    }
+
+    private fun mergeAnchors(into: MutableMap<Int, DeletedLines>, from: Map<Int, DeletedLines>) {
+        for ((anchor, lines) in from) {
+            val existing = into[anchor]
+            into[anchor] = DeletedLines(
+                (existing?.count ?: 0) + lines.count,
+                (existing?.lines ?: emptyList()) + lines.lines
+            )
         }
     }
 
@@ -83,13 +97,19 @@ object GitDiffParser {
         }
     }
 
+    private enum class PendingKind { DELETION, MODIFICATION }
+
     private fun parsePatch(patch: String): Map<String, FileDiffInfo> {
         val changed = mutableMapOf<String, MutableSet<Int>>()
         val deletions = mutableMapOf<String, MutableMap<Int, DeletedLines>>()
+        val modifications = mutableMapOf<String, MutableMap<Int, DeletedLines>>()
         var currentPath: String? = null
 
-        // A pure-deletion hunk (--unified=0) is a header followed immediately by
-        // exactly its old-side count of '-'-prefixed lines and nothing else.
+        // A pure-deletion hunk (--unified=0) is a header followed immediately by exactly its
+        // old-side count of '-'-prefixed lines and nothing else. A modification hunk (both an
+        // old-side and new-side count > 0) is the same shape, just followed by '+' lines we
+        // don't need to capture (their line numbers already came from the hunk header).
+        var pendingKind: PendingKind? = null
         var pendingPath: String? = null
         var pendingAnchor: Int? = null
         var pendingRemaining = 0
@@ -99,13 +119,15 @@ object GitDiffParser {
             val path = pendingPath
             val anchor = pendingAnchor
             if (path != null && anchor != null && pendingLines.isNotEmpty()) {
-                val map = deletions.getOrPut(path) { mutableMapOf() }
+                val target = if (pendingKind == PendingKind.MODIFICATION) modifications else deletions
+                val map = target.getOrPut(path) { mutableMapOf() }
                 val existing = map[anchor]
                 map[anchor] = DeletedLines(
                     (existing?.count ?: 0) + pendingLines.size,
                     (existing?.lines ?: emptyList()) + pendingLines
                 )
             }
+            pendingKind = null
             pendingPath = null
             pendingAnchor = null
             pendingRemaining = 0
@@ -139,6 +161,7 @@ object GitDiffParser {
                     val newCount = match.groupValues[3].takeIf { it.isNotEmpty() }?.toIntOrNull() ?: 1
                     if (newCount == 0) {
                         if (oldCount > 0) {
+                            pendingKind = PendingKind.DELETION
                             pendingPath = path
                             pendingAnchor = newStart
                             pendingRemaining = oldCount
@@ -148,14 +171,20 @@ object GitDiffParser {
                         for (i in 0 until newCount) {
                             lines.add(newStart + i)
                         }
+                        if (oldCount > 0) {
+                            pendingKind = PendingKind.MODIFICATION
+                            pendingPath = path
+                            pendingAnchor = newStart
+                            pendingRemaining = oldCount
+                        }
                     }
                 }
             }
         }
         flushPending()
 
-        return (changed.keys + deletions.keys).associateWith { path ->
-            FileDiffInfo(changed[path] ?: emptySet(), deletions[path] ?: emptyMap())
+        return (changed.keys + deletions.keys + modifications.keys).associateWith { path ->
+            FileDiffInfo(changed[path] ?: emptySet(), deletions[path] ?: emptyMap(), modifications[path] ?: emptyMap())
         }
     }
 }

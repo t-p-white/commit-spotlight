@@ -26,6 +26,9 @@ commit touched — in colors you pick.
 - **Deleted lines get a marker, not a guess** — since there's no surviving line to tint, deletions
   show as a colored divider with an inline "N lines deleted" label; hover it (or the right-hand
   gutter mark) to see the actual removed text.
+- **Modified lines show what they used to say** — a "was N line(s)" label appears at the end of
+  the first line of each modified block; hover it (or the right-hand gutter mark on any line in
+  the block) to see the text it replaced.
 - **8 colors, your choice** — picked per highlight run. Re-pick a color for an already-highlighted
   commit and it updates immediately, without re-running anything.
 - **Adjustable opacity** — one global opacity setting applies to every color, so highlights blend

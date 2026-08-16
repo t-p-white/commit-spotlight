@@ -2,12 +2,9 @@ package com.twhite.commitspotlight
 
 import com.intellij.codeInsight.hints.presentation.InlayPresentation
 import com.intellij.codeInsight.hints.presentation.InsetPresentation
-import com.intellij.codeInsight.hints.presentation.PillWithBackgroundPresentation
 import com.intellij.codeInsight.hints.presentation.PresentationFactory
 import com.intellij.codeInsight.hints.presentation.PresentationRenderer
-import com.intellij.codeInsight.hints.presentation.WithAttributesPresentation
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.editor.DefaultLanguageHighlighterColors
 import com.intellij.openapi.editor.Editor
 import com.intellij.openapi.editor.Inlay
 import com.intellij.openapi.editor.InlayProperties
@@ -390,7 +387,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
 
             val inlayOffset = if (showAbove) separatorOffset else document.getLineEndOffset(zeroBasedLine)
             val label = "$count ${if (count == 1) "line" else "lines"} deleted"
-            val labelPresentation = pillWithBackground(editor, presentationFactory.smallText(label))
+            val labelPresentation = pillWithBackground(presentationFactory, editor, presentationFactory.smallText(label))
             val presentation = presentationFactory.withTooltip(tooltipHtml, labelPresentation)
             val inlay = editor.inlayModel.addBlockElement(
                 inlayOffset,
@@ -410,7 +407,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
             val count = oldText.count
             val label = "was $count ${if (count == 1) "line" else "lines"}"
             val tooltipHtml = buildOldTextTooltip(oldText)
-            val labelPresentation = pillWithBackground(editor, presentationFactory.smallText(label))
+            val labelPresentation = pillWithBackground(presentationFactory, editor, presentationFactory.smallText(label))
             val presentation = presentationFactory.withTooltip(tooltipHtml, labelPresentation)
             val inlayOffset = document.getLineEndOffset(zeroBasedLine)
             val inlay = editor.inlayModel.addInlineElement(
@@ -453,24 +450,20 @@ class CommitHighlightService(private val project: Project) : Disposable {
     }
 
     /**
-     * [PresentationFactory.roundWithBackground] rounds with a small fixed corner radius and its
-     * vertical-centering hook lives behind an internal API we can't reach. This reproduces its
-     * theming — the same [DefaultLanguageHighlighterColors.INLAY_DEFAULT] background/foreground —
-     * around [PillWithBackgroundPresentation] (whose corner radius auto-matches its own height,
-     * giving a true pill), with generous padding around the text and an outer top inset to
-     * vertically center the whole badge against the surrounding line of code.
+     * [PresentationFactory.roundWithBackground]'s vertical-centering hook lives behind an
+     * internal API we can't reach, so this adds an outer top inset — sized from the rounded
+     * presentation's own measured height — to center the badge against the surrounding line
+     * of code ourselves.
      */
-    private fun pillWithBackground(editor: Editor, base: InlayPresentation): InlayPresentation {
+    private fun pillWithBackground(
+        presentationFactory: PresentationFactory,
+        editor: Editor,
+        base: InlayPresentation
+    ): InlayPresentation {
         val padded = InsetPresentation(base, 10, 10, 3, 3)
-        val pill = PillWithBackgroundPresentation(padded)
-        val attributed = WithAttributesPresentation(
-            pill,
-            DefaultLanguageHighlighterColors.INLAY_DEFAULT,
-            editor,
-            WithAttributesPresentation.AttributesFlags().withIsDefault(true)
-        )
-        val verticalOffset = ((editor.lineHeight - attributed.height) / 2).coerceAtLeast(0)
-        return InsetPresentation(attributed, 0, 0, verticalOffset, 0)
+        val rounded = presentationFactory.roundWithBackground(padded)
+        val verticalOffset = ((editor.lineHeight - rounded.height) / 2).coerceAtLeast(0)
+        return InsetPresentation(rounded, 0, 0, verticalOffset, 0)
     }
 
     private fun buildOldTextTooltip(deleted: DeletedLines): String {

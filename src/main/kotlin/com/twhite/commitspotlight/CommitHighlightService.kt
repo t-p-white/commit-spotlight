@@ -59,7 +59,13 @@ private class RoundedLineBackgroundRenderer(private val color: JBColor) : Custom
         if (!highlighter.isValid) return
         val document = editor.document
         val firstZeroBasedLine = document.getLineNumber(highlighter.startOffset)
-        val lastZeroBasedLine = document.getLineNumber(highlighter.endOffset.coerceAtMost(document.textLength))
+        // endOffset deliberately points one character past the last covered line (into the
+        // start of the following line) so the paint reaches the line break; back up by one to
+        // resolve the *last covered* line instead of the line after it.
+        val lastLineOffset = (highlighter.endOffset - 1)
+            .coerceAtMost(document.textLength - 1)
+            .coerceAtLeast(highlighter.startOffset)
+        val lastZeroBasedLine = document.getLineNumber(lastLineOffset)
         if (firstZeroBasedLine < 0 || lastZeroBasedLine >= document.lineCount) return
 
         val topY = editor.offsetToXY(document.getLineStartOffset(firstZeroBasedLine)).y

@@ -1,20 +1,20 @@
 # Commit Spotlight
 
 An IntelliJ Platform plugin that highlights, in your editor and the Git Log, exactly what a
-commit touched — in colors you pick.
+commit touched — in colours you pick.
 
 ## Screenshots
 
 <!-- Drop the actual PNGs into docs/screenshots/ with these filenames and these will render. -->
 
 ![Editor and Git Log highlighted together](docs/screenshots/hero.png)
-*A commit highlighted in a chosen color, visible both in the editor and across its row in the Git Log.*
+*A commit highlighted in a chosen colour, visible both in the editor and across its row in the Git Log.*
 
 ![Deleted lines popup](docs/screenshots/deleted-lines.png)
 *Hovering a "N lines deleted" label shows the actual removed code.*
 
-![Color and opacity picker](docs/screenshots/color-picker.png)
-*Picking a highlight color and adjusting opacity from the Git Log context menu.*
+![colour and opacity picker](docs/screenshots/color-picker.png)
+*Picking a highlight colour and adjusting opacity from the Git Log context menu.*
 
 ![Filtered Git Log](docs/screenshots/filtered-log.png)
 *"Show Only Highlighted Commits in Git Log" collapses the log down to just the commits you're tracking.*
@@ -24,16 +24,14 @@ commit touched — in colors you pick.
 - **Highlight changed/deleted lines** — select one or more commits in the Git Log and highlight
   the lines they added, changed, or deleted, directly in any open editor.
 - **Deleted lines get a marker, not a guess** — since there's no surviving line to tint, deletions
-  show as a colored divider with an inline "N lines deleted" label; hover it (or the right-hand
+  show as a coloured divider with an inline "N lines deleted" label; hover it (or the right-hand
   gutter mark) to see the actual removed text.
 - **Modified lines show what they used to say** — a "was N line(s)" pill appears at the end of
   the first line of each modified block; hover it (or the right-hand gutter mark on any line in
   the block) to see the text it replaced.
-- **Rounded highlight blocks** — a contiguous run of changed lines renders as a single
-  rounded-corner background block instead of a stack of sharp-edged rows.
-- **8 colors, your choice** — picked per highlight run. Re-pick a color for an already-highlighted
+- **8 colours, your choice** — picked per highlight run. Re-pick a colour for an already-highlighted
   commit and it updates immediately, without re-running anything.
-- **Adjustable opacity** — one global opacity setting applies to every color, so highlights blend
+- **Adjustable opacity** — one global opacity setting applies to every colour, so highlights blend
   with the editor background instead of reading as a flat, fully-opaque fill.
 - **Choose which commit wins on overlapping lines** — when two highlighted commits touch the
   same line, "Prioritize Newest Commit on Overlapping Lines" decides whether the chronologically

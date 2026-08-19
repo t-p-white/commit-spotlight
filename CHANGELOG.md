@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-08-19
+
+### Fixed
+- Rounded highlight background blocks could drift away from the lines they cover after an
+  edit shifted lines above or within them, since the renderer painted from line numbers
+  captured when the highlight was first drawn instead of tracking the highlighter's live
+  position.
+- Recoloring or clearing highlights for a subset of a batch's commits could patch the wrong
+  batch if another highlight/clear/recolor ran concurrently, since batches were matched by
+  list position rather than a stable identity — this could leave the Git Log row for a commit
+  out of sync with its editor highlight.
+
 ## [1.0.2] - 2026-08-16
 
 ### Changed
@@ -33,5 +45,6 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - "Open All Files in Commit" action.
 - Selective and full highlight clearing.
 
-[Unreleased]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.2...HEAD
+[Unreleased]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.3...HEAD
+[1.0.3]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.1...v1.0.2

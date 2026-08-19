@@ -35,7 +35,11 @@ import java.lang.ref.WeakReference
 private data class HighlightBatch(
     val color: HighlightColor,
     val hashes: Set<Hash>,
-    val diffInfoByPath: Map<String, FileDiffInfo>
+    val diffInfoByPath: Map<String, FileDiffInfo>,
+    // Stable identity, independent of position in [CommitHighlightService.batches] — that list
+    // can be spliced (add/remove/split) while a background recompute for an older snapshot of it
+    // is still in flight, so matching by list index there would silently patch the wrong batch.
+    val id: Long
 )
 
 /**
@@ -43,15 +47,19 @@ private data class HighlightBatch(
  * spanning the full editor width, rather than relying on [TextAttributes]' background (which
  * only ever paints sharp corners) — so a multi-line block reads as one rounded card instead of
  * a stack of separately-cornered rows.
+ *
+ * Reads the covered lines from [highlighter]'s own (start/end) offsets on every paint rather than
+ * capturing them once at construction time, since [RangeHighlighter] offsets — unlike a fixed
+ * line number — are automatically shifted by the platform as the document is edited above or
+ * within the block; painting from stale captured line numbers would drift out of sync with them.
  */
-private class RoundedLineBackgroundRenderer(
-    private val firstZeroBasedLine: Int,
-    private val lastZeroBasedLine: Int,
-    private val color: JBColor
-) : CustomHighlighterRenderer {
+private class RoundedLineBackgroundRenderer(private val color: JBColor) : CustomHighlighterRenderer {
 
     override fun paint(editor: Editor, highlighter: RangeHighlighter, g: Graphics) {
+        if (!highlighter.isValid) return
         val document = editor.document
+        val firstZeroBasedLine = document.getLineNumber(highlighter.startOffset)
+        val lastZeroBasedLine = document.getLineNumber(highlighter.endOffset.coerceAtMost(document.textLength))
         if (firstZeroBasedLine < 0 || lastZeroBasedLine >= document.lineCount) return
 
         val topY = editor.offsetToXY(document.getLineStartOffset(firstZeroBasedLine)).y
@@ -83,6 +91,8 @@ class CommitHighlightService(private val project: Project) : Disposable {
 
     private var repoRoot: File? = null
     private val batches = mutableListOf<HighlightBatch>()
+    private var nextBatchId = 0L
+    private fun nextBatchId(): Long = nextBatchId++
 
     // Only ever grows: split/recolor operations reuse hashes already highlighted once, so their
     // timestamps stay valid without needing to be re-supplied.
@@ -113,7 +123,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
     ) {
         repoRoot = newRepoRoot
         this.commitTimestamps.putAll(commitTimestamps)
-        batches.add(HighlightBatch(color, hashes, diffInfoByPath))
+        batches.add(HighlightBatch(color, hashes, diffInfoByPath, nextBatchId()))
         reapplyAllEditors()
         repaintLogTable()
     }
@@ -156,27 +166,34 @@ class CommitHighlightService(private val project: Project) : Disposable {
      * just gets a new color; a batch only partially covered is split in two using
      * [recomputedSplits] (diff info recomputed separately for the recolored vs. remaining
      * commits, since a batch's stored diff is a union across all its commits).
+     *
+     * [recomputedSplits] is keyed by [HighlightBatch.id] rather than list position: it was
+     * snapshotted before an off-EDT recompute, during which another highlight/clear/recolor call
+     * could have added, removed, or split batches and shifted everyone else's position — matching
+     * by the stable id (instead of a now-possibly-stale index) keeps a split from landing on the
+     * wrong batch, e.g. losing the Git Log row's color for a commit while its editor highlight
+     * (last written by a still-correct batch) lingers.
      */
     fun recolorCommits(
         hashesToRecolor: Set<Hash>,
         newColor: HighlightColor,
-        recomputedSplits: Map<Int, RecolorSplit>
+        recomputedSplits: Map<Long, RecolorSplit>
     ) {
         val newBatches = mutableListOf<HighlightBatch>()
-        for ((i, batch) in batches.withIndex()) {
+        for (batch in batches) {
             val recolorSubset = batch.hashes intersect hashesToRecolor
             when {
                 recolorSubset.isEmpty() -> newBatches.add(batch)
                 recolorSubset == batch.hashes -> newBatches.add(batch.copy(color = newColor))
                 else -> {
-                    val split = recomputedSplits[i]
+                    val split = recomputedSplits[batch.id]
                     if (split == null) {
                         newBatches.add(batch)
                         continue
                     }
                     val remaining = batch.hashes - hashesToRecolor
                     newBatches.add(batch.copy(hashes = remaining, diffInfoByPath = split.remainingDiff))
-                    newBatches.add(HighlightBatch(newColor, recolorSubset, split.recoloredDiff))
+                    newBatches.add(HighlightBatch(newColor, recolorSubset, split.recoloredDiff, nextBatchId()))
                 }
             }
         }
@@ -186,25 +203,29 @@ class CommitHighlightService(private val project: Project) : Disposable {
         repaintLogTable()
     }
 
-    /** A batch's hashes as of "now", keyed by its index, for planning a partial removal/recolor off-EDT. */
-    fun snapshotBatchHashes(): Map<Int, Set<Hash>> =
-        batches.withIndex().associate { (i, b) -> i to b.hashes }
+    /** A batch's hashes as of "now", keyed by its stable [HighlightBatch.id], for planning a partial removal/recolor off-EDT. */
+    fun snapshotBatchHashes(): Map<Long, Set<Hash>> =
+        batches.associate { it.id to it.hashes }
 
     /**
      * Removes [hashesToRemove] from every batch. A batch fully covered by [hashesToRemove] is
      * dropped outright; a batch only partially covered keeps its remaining commits, using
      * [recomputedDiffs] (diff info recomputed for just those remaining commits, since a batch's
      * stored diff is a union across all its commits and can't otherwise be split back apart).
+     *
+     * [recomputedDiffs] is keyed by [HighlightBatch.id] for the same reason as in
+     * [recolorCommits]: the list can be mutated by another concurrent action between the
+     * snapshot and this call, so list position alone isn't a reliable match key.
      */
-    fun removeCommitsFromBatches(hashesToRemove: Set<Hash>, recomputedDiffs: Map<Int, Map<String, FileDiffInfo>>) {
+    fun removeCommitsFromBatches(hashesToRemove: Set<Hash>, recomputedDiffs: Map<Long, Map<String, FileDiffInfo>>) {
         val newBatches = mutableListOf<HighlightBatch>()
-        for ((i, batch) in batches.withIndex()) {
+        for (batch in batches) {
             val remaining = batch.hashes - hashesToRemove
             when {
                 remaining.isEmpty() -> Unit // drop
                 remaining.size == batch.hashes.size -> newBatches.add(batch)
                 else -> {
-                    val newDiff = recomputedDiffs[i] ?: batch.diffInfoByPath
+                    val newDiff = recomputedDiffs[batch.id] ?: batch.diffInfoByPath
                     newBatches.add(batch.copy(hashes = remaining, diffInfoByPath = newDiff))
                 }
             }
@@ -330,7 +351,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
                 TextAttributes(),
                 HighlighterTargetArea.EXACT_RANGE
             )
-            highlighter.customRenderer = RoundedLineBackgroundRenderer(runStart - 1, runEnd - 1, color.toJBColor())
+            highlighter.customRenderer = RoundedLineBackgroundRenderer(color.toJBColor())
             highlighter.setErrorStripeMarkColor(color.toJBColor())
             val oldText = modificationInfo[runStart]?.second
             highlighter.errorStripeTooltip =

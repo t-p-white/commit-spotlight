@@ -42,6 +42,7 @@
         <projectService serviceImplementation="com.twhite.commitspotlight.CommitHighlightService"/>
         <applicationService serviceImplementation="com.twhite.commitspotlight.CommitHighlighterSettings"/>
         <logHighlighterFactory implementation="com.twhite.commitspotlight.SelectedCommitLogHighlighterFactory"/>
+        <editorTabColorProvider implementation="com.twhite.commitspotlight.CommitHighlightTabColorProvider"/>
         <notificationGroup id="CommitSpotlight.Notifications" displayType="BALLOON"/>
     </extensions>
 

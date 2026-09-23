@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.4] - 2026-09-23
+
+### Added
+- Highlights are now automatically cleared when the current branch changes, or when a
+  highlighted commit is no longer available (e.g. dropped or rewritten by a rebase), so they
+  never linger and point at stale history.
+- Each file's editor tab is now tinted to match its highlight color, kept in sync as you add,
+  remove, recolor, or clear highlights.
+- A highlight is now dropped automatically if a live edit touches its lines, instead of silently
+  drifting to cover text the commit never wrote.
+
+### Fixed
+- The rounded highlight background for a block could extend one line past what the commit
+  actually touched: the previous release's line-drift fix resolved a block's last line from an
+  offset that (deliberately, for the line-break paint) pointed one character into the
+  following line, instead of backing up to the line it was actually meant to resolve.
+
 ## [1.0.3] - 2026-08-19
 
 ### Fixed
@@ -45,6 +62,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - "Open All Files in Commit" action.
 - Selective and full highlight clearing.
 
-[Unreleased]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.3...HEAD
+[Unreleased]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.1...v1.0.2
+[1.0.1]: https://github.com/t-p-white/commit-spotlight/compare/14b4e99...v1.0.1

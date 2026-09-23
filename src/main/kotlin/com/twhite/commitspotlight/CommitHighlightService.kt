@@ -4,10 +4,17 @@ import com.intellij.codeInsight.hints.presentation.InlayPresentation
 import com.intellij.codeInsight.hints.presentation.InsetPresentation
 import com.intellij.codeInsight.hints.presentation.PresentationFactory
 import com.intellij.codeInsight.hints.presentation.PresentationRenderer
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.EditorFactory
 import com.intellij.openapi.editor.Inlay
 import com.intellij.openapi.editor.InlayProperties
+import com.intellij.openapi.editor.event.DocumentEvent
+import com.intellij.openapi.editor.event.DocumentListener
 import com.intellij.openapi.editor.markup.CustomHighlighterRenderer
 import com.intellij.openapi.editor.markup.HighlighterLayer
 import com.intellij.openapi.editor.markup.HighlighterTargetArea
@@ -15,10 +22,12 @@ import com.intellij.openapi.editor.markup.MarkupModel
 import com.intellij.openapi.editor.markup.RangeHighlighter
 import com.intellij.openapi.editor.markup.SeparatorPlacement
 import com.intellij.openapi.editor.markup.TextAttributes
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.fileEditor.TextEditor
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vcs.FileStatusManager
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
@@ -26,11 +35,15 @@ import com.intellij.vcs.log.Hash
 import com.intellij.vcs.log.impl.VcsProjectLog
 import com.intellij.vcs.log.ui.MainVcsLogUi
 import com.intellij.vcs.log.visible.filters.VcsLogFilterObject
+import git4idea.repo.GitRepository
+import git4idea.repo.GitRepositoryChangeListener
+import git4idea.repo.GitRepositoryManager
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.RenderingHints
 import java.io.File
 import java.lang.ref.WeakReference
+import java.util.WeakHashMap
 
 private data class HighlightBatch(
     val color: HighlightColor,
@@ -93,9 +106,29 @@ data class RecolorSplit(
  */
 class CommitHighlightService(private val project: Project) : Disposable {
 
+    companion object {
+        /** Half-open-interval overlap, pulled out standalone so it's unit-testable without a platform fixture. */
+        internal fun rangesOverlap(aStart: Int, aEnd: Int, bStart: Int, bEnd: Int): Boolean =
+            aStart < bEnd && aEnd > bStart
+    }
+
     private data class TrackedHighlight(val markupModel: MarkupModel, val highlighter: RangeHighlighter)
 
+    /**
+     * One drawn [highlighter] tagged with the original diff line number(s) (keys into a batch's
+     * [FileDiffInfo]) it currently represents — [onDocumentChanged] uses this to work out which
+     * original lines a live edit landed on, so they can be dropped from [invalidatedLines].
+     */
+    private data class HighlightSpan(val originalLines: Set<Int>, val highlighter: RangeHighlighter)
+
     private var repoRoot: File? = null
+
+    // The branch HEAD was on when the current highlights were added, so a later checkout to a
+    // different branch (or into detached HEAD) can be told apart from an unrelated repo change.
+    // Null covers "was already detached", not "unknown" — [onRepositoryChanged] only ever reads
+    // it while [repoRoot] is non-null, i.e. once it's been set by [addHighlightBatch].
+    private var highlightedBranchName: String? = null
+
     private val batches = mutableListOf<HighlightBatch>()
     private var nextBatchId = 0L
     private fun nextBatchId(): Long = nextBatchId++
@@ -106,6 +139,19 @@ class CommitHighlightService(private val project: Project) : Disposable {
 
     private val appliedHighlighters = mutableMapOf<VirtualFile, MutableList<TrackedHighlight>>()
     private val appliedInlays = mutableMapOf<VirtualFile, MutableList<Inlay<*>>>()
+    private val appliedSpans = mutableMapOf<VirtualFile, List<HighlightSpan>>()
+
+    // Original diff line numbers, per file, that a live edit has landed on since the highlight
+    // was drawn — excluded from rendering by [applyToFile] until the highlight is cleared or
+    // re-added, since we can no longer vouch that line still shows what the commit wrote there.
+    private val invalidatedLines = mutableMapOf<VirtualFile, MutableSet<Int>>()
+
+    // Weak on Document: [onBeforeDocumentChange] stashes which original lines an edit is about to
+    // touch (RangeHighlighter offsets are only reliable *before* the edit lands — see its doc
+    // comment) for [onDocumentChanged] to consume; a document that never gets a matching
+    // documentChanged call (e.g. the app shuts down mid-edit) shouldn't be pinned here forever.
+    private val pendingTouchedLines = WeakHashMap<Document, Set<Int>>()
+
     private val registeredLogUis = mutableListOf<WeakReference<MainVcsLogUi>>()
     private var showOnlyHighlighted = false
 
@@ -118,6 +164,20 @@ class CommitHighlightService(private val project: Project) : Disposable {
                 }
             }
         )
+        project.messageBus.connect(this).subscribe(
+            GitRepository.GIT_REPO_CHANGE,
+            GitRepositoryChangeListener { repository -> onRepositoryChanged(repository) }
+        )
+        // Global rather than per-editor: cheap to leave running (an immediate map lookup bails
+        // out for the vast majority of documents, which have no highlights at all) and avoids
+        // having to hook/unhook a per-file listener in step with every highlight add/remove.
+        EditorFactory.getInstance().eventMulticaster.addDocumentListener(
+            object : DocumentListener {
+                override fun beforeDocumentChange(event: DocumentEvent) = onBeforeDocumentChange(event)
+                override fun documentChanged(event: DocumentEvent) = onDocumentChanged(event)
+            },
+            this
+        )
     }
 
     fun addHighlightBatch(
@@ -128,10 +188,12 @@ class CommitHighlightService(private val project: Project) : Disposable {
         commitTimestamps: Map<Hash, Long> = emptyMap()
     ) {
         repoRoot = newRepoRoot
+        highlightedBranchName = findRepository(newRepoRoot)?.currentBranch?.name
         this.commitTimestamps.putAll(commitTimestamps)
         batches.add(HighlightBatch(color, hashes, diffInfoByPath, nextBatchId()))
         reapplyAllEditors()
         repaintLogTable()
+        refreshOpenEditorTabColors()
     }
 
     fun clearHighlights() {
@@ -145,15 +207,115 @@ class CommitHighlightService(private val project: Project) : Disposable {
             disposeInlays(inlays)
         }
         appliedInlays.clear()
+        appliedSpans.clear()
+        invalidatedLines.clear()
         repoRoot = null
+        highlightedBranchName = null
         if (showOnlyHighlighted) {
             showOnlyHighlighted = false
             applyHighlightFilter()
         }
         if (hadBatches) {
             repaintLogTable()
+            refreshOpenEditorTabColors()
         }
     }
+
+    /**
+     * Fired (among other things) on checkout, commit, rebase, and fetch — used to invalidate
+     * highlights that no longer make sense: [highlightedBranchName] having moved off HEAD means
+     * the highlighted diffs were computed against a branch that's no longer checked out, and a
+     * commit dropping out of the repo (e.g. rebased away) means its diff can never be recomputed.
+     */
+    private fun onRepositoryChanged(repository: GitRepository) {
+        val root = repoRoot ?: return
+        if (!isSameRoot(repository, root)) return
+
+        if (repository.currentBranch?.name != highlightedBranchName) {
+            clearHighlightsWithNotice("Branch changed — commit highlights cleared.")
+            return
+        }
+
+        val hashesToCheck = allHighlightedHashes().map { it.asString() }
+        if (hashesToCheck.isEmpty()) return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val missing = GitDiffParser.missingCommits(root, hashesToCheck)
+            if (missing.isEmpty()) return@executeOnPooledThread
+            ApplicationManager.getApplication().invokeLater {
+                if (project.isDisposed || repoRoot != root) return@invokeLater
+                // Re-check against current state: a concurrent clear/remove between the
+                // background check finishing and this callback running may have already dropped
+                // the very commits that were found missing, making this a no-op rather than a
+                // second, redundant clear.
+                val currentHashStrings = allHighlightedHashes().mapTo(mutableSetOf()) { it.asString() }
+                if (missing.any { it in currentHashStrings }) {
+                    clearHighlightsWithNotice("A highlighted commit is no longer available — commit highlights cleared.")
+                }
+            }
+        }
+    }
+
+    private fun clearHighlightsWithNotice(message: String) {
+        if (batches.isEmpty()) return
+        clearHighlights()
+        NotificationGroupManager.getInstance()
+            .getNotificationGroup("CommitSpotlight.Notifications")
+            .createNotification(message, NotificationType.INFORMATION)
+            .notify(project)
+    }
+
+    private fun isSameRoot(repository: GitRepository, root: File): Boolean =
+        try {
+            File(repository.root.path).canonicalFile == root.canonicalFile
+        } catch (e: Exception) {
+            false
+        }
+
+    private fun findRepository(root: File): GitRepository? =
+        GitRepositoryManager.getInstance(project).repositories.firstOrNull { isSameRoot(it, root) }
+
+    /**
+     * Captures which currently-drawn [HighlightSpan]s an about-to-happen edit overlaps, *before*
+     * the edit lands — a [RangeHighlighter]'s offsets are already shifted to their post-edit
+     * position by the time [documentChanged][DocumentListener.documentChanged] fires, which is too
+     * late to tell whether the edit actually landed inside one.
+     */
+    private fun onBeforeDocumentChange(event: DocumentEvent) {
+        val file = FileDocumentManager.getInstance().getFile(event.document) ?: return
+        val spans = appliedSpans[file]
+        if (spans.isNullOrEmpty()) return
+
+        val editStart = event.offset
+        val editEnd = editStart + event.oldLength
+        val touched = spans.asSequence()
+            .filter { it.highlighter.isValid && rangesOverlap(editStart, editEnd, it.highlighter.startOffset, it.highlighter.endOffset) }
+            .flatMapTo(mutableSetOf()) { it.originalLines }
+        if (touched.isNotEmpty()) {
+            pendingTouchedLines[event.document] = touched
+        }
+    }
+
+    /**
+     * Commits whatever [onBeforeDocumentChange] found for this edit: marks those original lines
+     * invalid for this file and redraws it, which drops the now-stale highlight from view (and,
+     * for a line whose only claim on a deletion/modification marker was sitting inside that same
+     * span, its pill/separator along with it) without touching any other file's highlights.
+     */
+    private fun onDocumentChanged(event: DocumentEvent) {
+        val touched = pendingTouchedLines.remove(event.document) ?: return
+        val file = FileDocumentManager.getInstance().getFile(event.document) ?: return
+        invalidatedLines.getOrPut(file) { mutableSetOf() }.addAll(touched)
+        ApplicationManager.getApplication().invokeLater {
+            if (!project.isDisposed) {
+                applyToFile(file)
+                refreshOpenEditorTabColors()
+            }
+        }
+    }
+
+    /** Test-only window into what's actually drawn right now, keyed by original diff line number — see [HighlightSpan]. */
+    internal fun currentlyHighlightedOriginalLines(file: VirtualFile): Set<Int> =
+        appliedSpans[file]?.flatMapTo(mutableSetOf()) { it.originalLines } ?: emptySet()
 
     fun isHighlighted(hash: Hash): Boolean = batches.any { hash in it.hashes }
 
@@ -161,11 +323,46 @@ class CommitHighlightService(private val project: Project) : Disposable {
     fun refreshAllHighlights() {
         reapplyAllEditors()
         repaintLogTable()
+        refreshOpenEditorTabColors()
     }
 
     /** Color of the most recent batch containing [hash], or null if it isn't highlighted. */
     fun colorForHash(hash: Hash): JBColor? =
         batches.lastOrNull { hash in it.hashes }?.color?.toJBColor()
+
+    /**
+     * Color for [CommitHighlightTabColorProvider] to tint [file]'s editor tab with, or null for
+     * no override. Computed from [batches] directly rather than from [appliedSpans] so a tab
+     * colors correctly even before its editor has ever been opened (and so [invalidatedLines]
+     * turns it back off the same way it turns off the in-editor highlight) — mirrors the
+     * winner-takes-the-line logic in [applyToFile], just rolled up to "does this file have
+     * anything left to show at all, and if so, whose color wins."
+     */
+    fun colorForFile(file: VirtualFile): JBColor? {
+        val root = repoRoot ?: return null
+        val relativePath = relativePathOf(root, file) ?: return null
+        val invalid = invalidatedLines[file] ?: emptySet()
+
+        var winner: HighlightColor? = null
+        for (batch in orderedBatches()) {
+            val info = batch.diffInfoByPath[relativePath] ?: continue
+            val stillVisible = info.changedLines.any { it !in invalid } ||
+                info.deletionAnchors.keys.any { it !in invalid } ||
+                info.modificationAnchors.keys.any { it !in invalid }
+            if (stillVisible) {
+                winner = batch.color
+            }
+        }
+        return winner?.toJBColor()
+    }
+
+    /** Batches in the order later ones should win ties on a line/file multiple batches touch. */
+    private fun orderedBatches(): List<HighlightBatch> =
+        if (CommitHighlighterSettings.getInstance().prioritizeNewestCommit) {
+            batches.sortedBy { batch -> batch.hashes.maxOfOrNull { commitTimestamps[it] ?: 0L } ?: 0L }
+        } else {
+            batches
+        }
 
     /**
      * Recolors [hashesToRecolor] to [newColor]. A batch entirely covered by [hashesToRecolor]
@@ -207,6 +404,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
         batches.addAll(newBatches)
         reapplyAllEditors()
         repaintLogTable()
+        refreshOpenEditorTabColors()
     }
 
     /** A batch's hashes as of "now", keyed by its stable [HighlightBatch.id], for planning a partial removal/recolor off-EDT. */
@@ -240,6 +438,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
         batches.addAll(newBatches)
         reapplyAllEditors()
         repaintLogTable()
+        refreshOpenEditorTabColors()
     }
 
     /** Called by [SelectedCommitLogHighlighterFactory] with the exact UI each highlighter instance belongs to. */
@@ -286,6 +485,25 @@ class CommitHighlightService(private val project: Project) : Disposable {
         }
     }
 
+    /**
+     * [EditorTabColorProvider] has no push mechanism of its own — the platform only re-queries it
+     * on its own schedule — so every path that can change [colorForFile]'s answer calls this to
+     * ask each open tab to re-fetch it now.
+     *
+     * There's no public API that asks for a tab color refresh directly (the platform's own
+     * `updateFileColor` lives on the internal `FileEditorManagerImpl`, not part of the public
+     * `FileEditorManagerEx` surface). What *is* public — [FileStatusManager.fileStatusChanged] —
+     * is what the platform's own tab-presentation code listens for to recompute a file's tab
+     * color, name, and icon; nothing here depends on VCS status itself, this is just the
+     * public, supported way to ask for that recompute.
+     */
+    private fun refreshOpenEditorTabColors() {
+        val statusManager = FileStatusManager.getInstance(project)
+        for (openFile in FileEditorManager.getInstance(project).openFiles) {
+            statusManager.fileStatusChanged(openFile)
+        }
+    }
+
     private fun reapplyAllEditors() {
         for (editor in FileEditorManager.getInstance(project).allEditors) {
             if (editor is TextEditor) {
@@ -305,12 +523,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
         val modificationInfo = linkedMapOf<Int, Pair<HighlightColor, DeletedLines>>()
         // Iteration order decides which batch's color/tooltip wins on a line multiple batches
         // touch — the last one processed overwrites earlier ones in the maps below.
-        val orderedBatches = if (CommitHighlighterSettings.getInstance().prioritizeNewestCommit) {
-            batches.sortedBy { batch -> batch.hashes.maxOfOrNull { commitTimestamps[it] ?: 0L } ?: 0L }
-        } else {
-            batches
-        }
-        for (batch in orderedBatches) {
+        for (batch in orderedBatches()) {
             val info = batch.diffInfoByPath[relativePath] ?: continue
             for (line in info.changedLines) {
                 lineColors[line] = batch.color
@@ -321,6 +534,12 @@ class CommitHighlightService(private val project: Project) : Disposable {
             for ((anchor, oldText) in info.modificationAnchors) {
                 modificationInfo[anchor] = batch.color to oldText
             }
+        }
+        val invalid = invalidatedLines[file]
+        if (!invalid.isNullOrEmpty()) {
+            lineColors.keys.removeAll(invalid)
+            deletionInfo.keys.removeAll(invalid)
+            modificationInfo.keys.removeAll(invalid)
         }
         if (lineColors.isEmpty() && deletionInfo.isEmpty() && modificationInfo.isEmpty()) return
 
@@ -333,6 +552,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
         val markupModel = editor.markupModel
         val tracked = mutableListOf<TrackedHighlight>()
         val inlays = mutableListOf<Inlay<*>>()
+        val spans = mutableListOf<HighlightSpan>()
         val presentationFactory = PresentationFactory(editor)
 
         // Grouped into contiguous same-color runs so a multi-line change renders as one rounded
@@ -363,6 +583,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
             highlighter.errorStripeTooltip =
                 if (oldText != null) buildOldTextTooltip(oldText) else "Changed by a highlighted commit"
             tracked.add(TrackedHighlight(markupModel, highlighter))
+            spans.add(HighlightSpan((runStart..runEnd).toSet(), highlighter))
         }
 
         for (lineNumber in validLines) {
@@ -411,6 +632,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
             highlighter.setThinErrorStripeMark(true)
             highlighter.errorStripeTooltip = tooltipHtml
             tracked.add(TrackedHighlight(markupModel, highlighter))
+            spans.add(HighlightSpan(setOf(anchor), highlighter))
 
             val inlayOffset = if (showAbove) separatorOffset else document.getLineEndOffset(zeroBasedLine)
             val label = "$count ${if (count == 1) "line" else "lines"} deleted"
@@ -453,11 +675,15 @@ class CommitHighlightService(private val project: Project) : Disposable {
         if (inlays.isNotEmpty()) {
             appliedInlays[file] = inlays
         }
+        if (spans.isNotEmpty()) {
+            appliedSpans[file] = spans
+        }
     }
 
     private fun removeHighlightsFor(file: VirtualFile) {
         appliedHighlighters.remove(file)?.let { removeTracked(it) }
         appliedInlays.remove(file)?.let { disposeInlays(it) }
+        appliedSpans.remove(file)
     }
 
     private fun removeTracked(tracked: List<TrackedHighlight>) {

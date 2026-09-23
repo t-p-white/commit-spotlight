@@ -1,3 +1,5 @@
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+
 plugins {
     id("java")
     kotlin("jvm") version "2.3.10"
@@ -5,7 +7,7 @@ plugins {
 }
 
 group = "com.twhite"
-version = "1.0.3"
+version = "1.0.4"
 
 repositories {
     mavenCentral()
@@ -30,10 +32,21 @@ dependencies {
         bundledPlugin("Git4Idea")
         bundledModule("intellij.platform.vcs.log")
         bundledModule("intellij.platform.vcs.log.impl")
+
+        // Resolves straight from the local IDE's own lib/testFramework.jar rather than a Maven
+        // coordinate — same reasoning as `local(androidStudioPath)` above: a canary build's test
+        // framework artifacts aren't reliably published either.
+        testFramework(TestFrameworkType.Bundled)
     }
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.2")
+
+    // BasePlatformTestCase is JUnit3-style (extends junit.framework.TestCase); the Vintage
+    // engine is what lets the JUnit Platform launcher (useJUnitPlatform(), below) discover and
+    // run those alongside the Jupiter tests.
+    testImplementation("junit:junit:4.13.2")
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.10.2")
 }
 
 tasks.test {

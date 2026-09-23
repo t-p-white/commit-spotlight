@@ -38,10 +38,17 @@ commit touched — in colours you pick.
   newest commit wins, or whichever was highlighted most recently (the default).
 - **Full-row Git Log highlighting** — highlighted commits are tinted across their entire row in
   the log, not just in the editor.
+- **Editor tab tinting** — a file with an active highlight gets its editor tab tinted to match, so
+  you can spot at a glance which open files have something highlighted.
 - **Show only highlighted commits** — filter the Git Log down to just what you've highlighted.
 - **Open all files in a commit** — jump straight to every file a commit touched.
 - **Clear selectively or entirely** — clear just the currently-selected commit's highlight, or
   everything at once.
+- **Highlights clear themselves when they'd be wrong** — switching branches, or a highlighted
+  commit disappearing (e.g. dropped or rewritten by a rebase), clears highlights automatically
+  instead of leaving stale ones pointing at the wrong history.
+- **Highlights stay honest** — editing inside (or deleting) a highlighted block drops just that
+  highlight, rather than letting it silently drift to cover text the commit never touched.
 
 ## Requirements
 

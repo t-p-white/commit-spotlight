@@ -59,6 +59,58 @@ object GitDiffParser {
         }
     }
 
+    /**
+     * Returns the subset of [commitHashes] that no longer resolve to an object in the repo —
+     * e.g. dropped or rewritten by an interactive rebase. Used to clear stale highlights rather
+     * than let them silently point at history that no longer exists.
+     */
+    fun missingCommits(repoRoot: File, commitHashes: List<String>): Set<String> {
+        if (commitHashes.isEmpty()) return emptySet()
+        return try {
+            val process = ProcessBuilder("git", "cat-file", "--batch-check=%(objectname)")
+                .directory(repoRoot)
+                .redirectErrorStream(false)
+                .start()
+            // Written from a separate thread rather than inline: with enough hashes, git can fill
+            // its stdout pipe before we finish writing stdin, and neither side would ever unblock
+            // if both happened on this thread.
+            val stdinWriter = Thread {
+                try {
+                    process.outputStream.bufferedWriter().use { writer ->
+                        for (hash in commitHashes) {
+                            writer.write(hash)
+                            writer.newLine()
+                        }
+                    }
+                } catch (_: Exception) {
+                    // The waitFor()/exitValue() check below is what actually decides success —
+                    // this just avoids crashing when the process has already exited early.
+                }
+            }
+            stdinWriter.start()
+            val outputLines = process.inputStream.bufferedReader().readLines()
+            val error = process.errorStream.bufferedReader().readText()
+            stdinWriter.join(TimeUnit.SECONDS.toMillis(15))
+            val finished = process.waitFor(15, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                LOG.warn("git cat-file timed out checking commit availability in $repoRoot")
+                return emptySet()
+            }
+            if (process.exitValue() != 0) {
+                LOG.warn("git cat-file failed checking commit availability in $repoRoot (exit ${process.exitValue()}): $error")
+                return emptySet()
+            }
+            commitHashes.indices.mapNotNullTo(mutableSetOf()) { i ->
+                val line = outputLines.getOrNull(i)
+                if (line != null && line.endsWith(" missing")) commitHashes[i] else null
+            }
+        } catch (e: Exception) {
+            LOG.warn("failed to check commit availability in $repoRoot", e)
+            emptySet()
+        }
+    }
+
     private fun mergeAnchors(into: MutableMap<Int, DeletedLines>, from: Map<Int, DeletedLines>) {
         for ((anchor, lines) in from) {
             val existing = into[anchor]

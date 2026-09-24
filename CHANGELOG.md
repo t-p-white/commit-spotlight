@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-09-24
+
+### Added
+- "Tint Editor Tabs for Highlighted Files" toggle (on by default) for anyone who'd rather keep
+  tabs their normal color and rely on the in-editor highlight alone.
+
+### Changed
+- "Show Only Highlighted Commits in Git Log" and "Prioritize Newest Commit on Overlapping Lines"
+  now keep the context menu open when toggled, matching the color and opacity pickers next to
+  them, so you can flip a setting and see the result without reopening the menu.
+
 ## [1.0.4] - 2026-09-23
 
 ### Added
@@ -14,13 +25,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   highlighted commit is no longer available (e.g. dropped or rewritten by a rebase), so they
   never linger and point at stale history.
 - Each file's editor tab is now tinted to match its highlight color, kept in sync as you add,
-  remove, recolor, or clear highlights — toggle this off with "Tint Editor Tabs for Highlighted
-  Files" if you'd rather tabs stayed their normal color.
+  remove, recolor, or clear highlights.
 - A highlight is now dropped automatically if a live edit touches its lines, instead of silently
   drifting to cover text the commit never wrote.
-- "Show Only Highlighted Commits in Git Log" and "Prioritize Newest Commit on Overlapping Lines"
-  now keep the context menu open when toggled, matching the color and opacity pickers next to
-  them, so you can flip a setting and see the result without reopening the menu.
 
 ### Fixed
 - Highlighting a commit that wasn't the most recent one to touch a file could paint completely
@@ -74,7 +81,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - "Open All Files in Commit" action.
 - Selective and full highlight clearing.
 
-[Unreleased]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.4...HEAD
+[Unreleased]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.5...HEAD
+[1.0.5]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.1...v1.0.2

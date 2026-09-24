@@ -39,7 +39,8 @@ commit touched — in colours you pick.
 - **Full-row Git Log highlighting** — highlighted commits are tinted across their entire row in
   the log, not just in the editor.
 - **Editor tab tinting** — a file with an active highlight gets its editor tab tinted to match, so
-  you can spot at a glance which open files have something highlighted.
+  you can spot at a glance which open files have something highlighted. Toggle it off with
+  "Tint Editor Tabs for Highlighted Files" if you'd rather keep tabs their normal color.
 - **Show only highlighted commits** — filter the Git Log down to just what you've highlighted.
 - **Open all files in a commit** — jump straight to every file a commit touched.
 - **Clear selectively or entirely** — clear just the currently-selected commit's highlight, or

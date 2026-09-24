@@ -1,6 +1,5 @@
 package com.twhite.commitspotlight
 
-import com.intellij.ide.ActivityTracker
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -24,6 +23,12 @@ class ChangeHighlightColorActionGroup : DefaultActionGroup() {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
     // The XML-declared icon is just a static fallback; show the actually-active color instead.
+    // This (and each child's own "✓" in buildColorAction) is correct every time this group's
+    // menu is freshly built — i.e. every time you reopen "Commit Spotlight" from scratch — but
+    // won't visibly change mid-session if you pick a different color while this menu stays open
+    // (KeepPopupOnPerform.Always) without closing it: ActionPopupMenuImpl only (re)builds a
+    // group's children when that specific popup instance is first shown, so there's nothing to
+    // hook to force an earlier redraw of an already-built parent while a submenu of it is open.
     override fun update(e: AnActionEvent) {
         val activeColor = CommitHighlighterSettings.getInstance().color
         e.presentation.icon = ColorIcon(16, activeColor.toJBColor())
@@ -49,10 +54,6 @@ class ChangeHighlightColorActionGroup : DefaultActionGroup() {
             override fun actionPerformed(e: AnActionEvent) {
                 CommitHighlighterSettings.getInstance().colorId = color.id
                 recolorSelectedCommits(e, color)
-                // Forces the action system to re-poll presentations now, so the parent group's
-                // "Highlight Color: X" label refreshes even while this popup stays open
-                // (KeepPopupOnPerform.Always) instead of waiting for the whole menu to reopen.
-                ActivityTracker.getInstance().inc()
             }
         }
     }

@@ -1,6 +1,5 @@
 package com.twhite.commitspotlight
 
-import com.intellij.ide.ActivityTracker
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -16,6 +15,9 @@ class ChangeHighlightAlphaActionGroup : DefaultActionGroup() {
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
 
+    // Correct every time this group's menu is freshly built, same caveat as
+    // ChangeHighlightColorActionGroup: won't visibly change mid-session if you pick a different
+    // level while this menu stays open without closing it — see that class for why.
     override fun update(e: AnActionEvent) {
         e.presentation.text = "Highlight Opacity: ${CommitHighlighterSettings.getInstance().alphaPercent}%"
     }
@@ -36,10 +38,6 @@ class ChangeHighlightAlphaActionGroup : DefaultActionGroup() {
             override fun actionPerformed(e: AnActionEvent) {
                 CommitHighlighterSettings.getInstance().alphaPercent = percent
                 e.project?.getService(CommitHighlightService::class.java)?.refreshAllHighlights()
-                // Forces the action system to re-poll presentations now, so the parent group's
-                // "Highlight Opacity: X%" label refreshes even while this popup stays open
-                // (KeepPopupOnPerform.Always) instead of waiting for the whole menu to reopen.
-                ActivityTracker.getInstance().inc()
             }
         }
     }

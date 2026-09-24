@@ -339,6 +339,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
      * anything left to show at all, and if so, whose color wins."
      */
     fun colorForFile(file: VirtualFile): JBColor? {
+        if (!CommitHighlighterSettings.getInstance().tabTintingEnabled) return null
         val root = repoRoot ?: return null
         val relativePath = relativePathOf(root, file) ?: return null
         val invalid = invalidatedLines[file] ?: emptySet()

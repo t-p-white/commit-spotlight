@@ -13,6 +13,7 @@ class CommitHighlighterSettings : PersistentStateComponent<CommitHighlighterSett
         var colorId: String = CommitHighlighterColors.DEFAULT.id
         var alphaPercent: Int = 50
         var prioritizeNewestCommit: Boolean = false
+        var tabTintingEnabled: Boolean = true
     }
 
     private var state = State()
@@ -41,6 +42,13 @@ class CommitHighlighterSettings : PersistentStateComponent<CommitHighlighterSett
         get() = state.prioritizeNewestCommit
         set(value) {
             state.prioritizeNewestCommit = value
+        }
+
+    /** Whether a highlighted file's editor tab gets tinted to match, on top of the in-editor highlight. */
+    var tabTintingEnabled: Boolean
+        get() = state.tabTintingEnabled
+        set(value) {
+            state.tabTintingEnabled = value
         }
 
     override fun getState(): State = state

@@ -14,9 +14,13 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   highlighted commit is no longer available (e.g. dropped or rewritten by a rebase), so they
   never linger and point at stale history.
 - Each file's editor tab is now tinted to match its highlight color, kept in sync as you add,
-  remove, recolor, or clear highlights.
+  remove, recolor, or clear highlights — toggle this off with "Tint Editor Tabs for Highlighted
+  Files" if you'd rather tabs stayed their normal color.
 - A highlight is now dropped automatically if a live edit touches its lines, instead of silently
   drifting to cover text the commit never wrote.
+- "Show Only Highlighted Commits in Git Log" and "Prioritize Newest Commit on Overlapping Lines"
+  now keep the context menu open when toggled, matching the color and opacity pickers next to
+  them, so you can flip a setting and see the result without reopening the menu.
 
 ### Fixed
 - Highlighting a commit that wasn't the most recent one to touch a file could paint completely

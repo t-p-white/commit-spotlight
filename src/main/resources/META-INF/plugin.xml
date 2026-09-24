@@ -85,6 +85,11 @@
                     text="Prioritize Newest Commit on Overlapping Lines"
                     description="Decides which commit wins when two highlighted commits touch the same line. Off (default): whichever commit you highlighted most recently wins, regardless of its actual commit date. On: whichever commit is chronologically newest wins, regardless of the order you highlighted them in."
                     icon="AllIcons.General.ArrowUp"/>
+            <action id="CommitSpotlight.ToggleTabTinting"
+                    class="com.twhite.commitspotlight.ToggleTabTintingAction"
+                    text="Tint Editor Tabs for Highlighted Files"
+                    description="On (default): a file's editor tab is tinted to match its highlight color. Off: only the in-editor highlight shows, tabs stay their normal color."
+                    icon="AllIcons.Actions.Colors"/>
             <separator/>
             <action id="CommitSpotlight.OpenChangedFiles"
                     class="com.twhite.commitspotlight.OpenChangedFilesAction"

@@ -2,6 +2,7 @@ package com.twhite.commitspotlight
 
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.KeepPopupOnPerform
 import com.intellij.openapi.actionSystem.ToggleAction
 
 /** Filters the Git Log down to just the commits currently tracked by [CommitHighlightService]. */
@@ -25,5 +26,8 @@ class ToggleShowOnlyHighlightedAction : ToggleAction() {
         val service = project?.getService(CommitHighlightService::class.java)
         val hasHighlights = service?.allHighlightedHashes()?.isNotEmpty() ?: false
         e.presentation.isEnabled = hasHighlights || (service?.isShowOnlyHighlighted() ?: false)
+        // A toggle you might flip back and forth while checking the result — same reasoning as
+        // the color/opacity pickers keeping the menu open.
+        e.presentation.keepPopupOnPerform = KeepPopupOnPerform.Always
     }
 }

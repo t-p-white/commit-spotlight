@@ -4,6 +4,7 @@ import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.KeepPopupOnPerform
 import com.intellij.openapi.actionSystem.ToggleAction
 
 /**
@@ -17,6 +18,13 @@ import com.intellij.openapi.actionSystem.ToggleAction
 class TogglePrioritizeNewestCommitAction : ToggleAction() {
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+
+    override fun update(e: AnActionEvent) {
+        super.update(e)
+        // A toggle you might flip back and forth while checking the result — same reasoning as
+        // the color/opacity pickers keeping the menu open.
+        e.presentation.keepPopupOnPerform = KeepPopupOnPerform.Always
+    }
 
     override fun isSelected(e: AnActionEvent): Boolean =
         CommitHighlighterSettings.getInstance().prioritizeNewestCommit

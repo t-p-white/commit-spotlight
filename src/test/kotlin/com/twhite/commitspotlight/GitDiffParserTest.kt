@@ -180,6 +180,104 @@ class GitDiffParserTest {
         assertTrue(GitDiffParser.changedLinesForCommits(repo, emptyList()).isEmpty())
     }
 
+    // --- Remapping onto the file's *current* state (not just the commit's own diff) ---
+
+    @Test
+    fun `highlighted lines shift when a later commit inserts lines above them`() {
+        writeFile("a.txt", "one\ntwo\n")
+        commitAll("initial")
+        writeFile("a.txt", "one\ntwo\nthree\n")
+        val hash = commitAll("add three")
+        writeFile("a.txt", "zero\none\ntwo\nthree\n")
+        commitAll("insert zero at the top")
+
+        val info = GitDiffParser.changedLinesForCommits(repo, listOf(hash))["a.txt"]!!
+
+        // "three" was added at line 3 by `hash`; the later insertion at the top pushes it to 4.
+        assertEquals(setOf(4), info.changedLines)
+    }
+
+    @Test
+    fun `a line is dropped once a later commit further changes it`() {
+        writeFile("a.txt", "one\ntwo\n")
+        commitAll("initial")
+        writeFile("a.txt", "one\ntwo\nthree\n")
+        val hash = commitAll("add three")
+        writeFile("a.txt", "one\ntwo\nTHREE\n")
+        commitAll("someone else edits three")
+
+        val result = GitDiffParser.changedLinesForCommits(repo, listOf(hash))
+
+        // Nothing left to attribute to `hash` at all, so "a.txt" isn't a key in the result —
+        // same as any other path with no surviving highlight-worthy content.
+        assertTrue(result["a.txt"]?.changedLines.isNullOrEmpty())
+    }
+
+    @Test
+    fun `a line dropped by later history is not highlighted at all`() {
+        writeFile("a.txt", "one\ntwo\n")
+        commitAll("initial")
+        writeFile("a.txt", "one\ntwo\nthree\n")
+        val hash = commitAll("add three")
+        writeFile("a.txt", "one\ntwo\n")
+        commitAll("someone else removes three again")
+
+        val result = GitDiffParser.changedLinesForCommits(repo, listOf(hash))
+
+        assertTrue(result["a.txt"]?.changedLines.isNullOrEmpty())
+    }
+
+    @Test
+    fun `deletion anchor shifts when a later commit inserts lines above it`() {
+        writeFile("a.txt", "one\ntwo\nthree\n")
+        commitAll("initial")
+        writeFile("a.txt", "one\nthree\n")
+        val hash = commitAll("delete two")
+        writeFile("a.txt", "zero\none\nthree\n")
+        commitAll("insert zero at the top")
+
+        val info = GitDiffParser.changedLinesForCommits(repo, listOf(hash))["a.txt"]!!
+
+        assertTrue(info.changedLines.isEmpty())
+        assertEquals(listOf("two"), info.deletionAnchors[2]?.lines)
+    }
+
+    @Test
+    fun `an unchanged file since the highlighted commit needs no remapping`() {
+        writeFile("a.txt", "one\n")
+        commitAll("initial")
+        writeFile("a.txt", "one\ntwo\nthree\n")
+        val hash = commitAll("add lines")
+        // No further commits touch a.txt — current state is exactly what `hash` produced.
+
+        val info = GitDiffParser.changedLinesForCommits(repo, listOf(hash))["a.txt"]!!
+
+        assertEquals(setOf(2, 3), info.changedLines)
+    }
+
+    @Test
+    fun `a line immediately followed by a later insertion is not swallowed by that insertion's offset`() {
+        // Regression test for a boundary bug: a pure-insertion hunk's anchor line (its oldCount
+        // is 0, so it consumes no old lines) was incorrectly treated as falling *inside* that
+        // hunk, pulling in its offset instead of just the hunks before it — e.g. a block ending
+        // exactly where a later commit's insertion begins would map to a wildly wrong line
+        // number, landing well past where that later insertion's content ends.
+        writeFile("a.txt", "one\ntwo\n")
+        commitAll("initial")
+        writeFile("a.txt", "one\ntwo\nthree\nfour\n")
+        val hash = commitAll("add three and four")
+        // Insert 20 lines immediately after "four" (i.e. right after the block `hash` added).
+        val laterLines = (1..20).joinToString("") { "later-$it\n" }
+        writeFile("a.txt", "one\ntwo\nthree\nfour\n$laterLines")
+        commitAll("insert a large block right after")
+
+        val info = GitDiffParser.changedLinesForCommits(repo, listOf(hash))["a.txt"]!!
+
+        // "three" and "four" keep their original positions — the insertion coming *after* them
+        // must not shift them forward by its own line count.
+        assertEquals(setOf(3, 4), info.changedLines)
+    }
+
     private fun writeFile(relativePath: String, content: String) {
         File(repo, relativePath).apply { parentFile.mkdirs() }.writeText(content)
     }

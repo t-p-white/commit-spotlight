@@ -19,6 +19,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   drifting to cover text the commit never wrote.
 
 ### Fixed
+- Highlighting a commit that wasn't the most recent one to touch a file could paint completely
+  unrelated lines: line positions were taken straight from that commit's own diff and painted
+  onto the file as it exists now, with no adjustment for anything that changed the file's shape
+  since — an insertion earlier in the file, a later edit to the same lines, other commits
+  reshaping the surrounding code. Commit diffs are now remapped onto the file's current state by
+  diffing the commit directly against it, so a line that's since been further changed is dropped
+  (there's no longer a single honest "current" position for it) rather than shown in the wrong
+  place, and everything else lands exactly where it now sits.
 - The rounded highlight background for a block could extend one line past what the commit
   actually touched: the previous release's line-drift fix resolved a block's last line from an
   offset that (deliberately, for the line-break paint) pointed one character into the

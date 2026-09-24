@@ -33,15 +33,21 @@ object GitDiffParser {
 
     private val LOG = Logger.getInstance(GitDiffParser::class.java)
     private val HUNK_HEADER = Regex("""^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@""")
+    private val FULL_HUNK_HEADER = Regex("""^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@""")
 
-    /** Union of changed lines and deletions per repo-relative path, across all given commits. */
+    /**
+     * Union of changed lines and deletions per repo-relative path, across all given commits —
+     * remapped onto the file's *current* working-tree state (see [remapToCurrent]), so a commit
+     * from well before HEAD still highlights the right lines rather than wherever its own
+     * line numbers happen to land in a file that's since been reshaped around them.
+     */
     fun changedLinesForCommits(repoRoot: File, commitHashes: List<String>): Map<String, FileDiffInfo> {
         val changed = mutableMapOf<String, MutableSet<Int>>()
         val deletions = mutableMapOf<String, MutableMap<Int, DeletedLines>>()
         val modifications = mutableMapOf<String, MutableMap<Int, DeletedLines>>()
         for (hash in commitHashes) {
             val patch = runGitShow(repoRoot, hash) ?: continue
-            val parsed = parsePatch(patch)
+            val parsed = remapToCurrent(repoRoot, hash, parsePatch(patch))
             for ((path, info) in parsed) {
                 if (info.changedLines.isNotEmpty()) {
                     changed.getOrPut(path) { mutableSetOf() }.addAll(info.changedLines)
@@ -147,6 +153,132 @@ object GitDiffParser {
             LOG.warn("failed to run git show for commit $hash in $repoRoot", e)
             null
         }
+    }
+
+    /** One `@@ -oldStart,oldCount +newStart,newCount @@` hunk from a *different* diff — see [remapToCurrent]. */
+    private data class HunkRange(val oldStart: Int, val oldCount: Int, val newCount: Int)
+
+    /**
+     * Translates old-side line numbers to new-side ones using a sequence of [hunks] between the
+     * two file versions being compared, treating everything outside a hunk as unchanged context
+     * that simply shifts by the hunks before it.
+     */
+    private class LineMapper(hunks: List<HunkRange>) {
+        private val sortedHunks = hunks.sortedBy { it.oldStart }
+
+        /** Null means [oldLine] falls inside a range that was itself further changed — no single current line answers to it anymore. */
+        fun mapOldToNew(oldLine: Int): Int? {
+            var offset = 0
+            for (hunk in sortedHunks) {
+                if (hunk.oldCount == 0) {
+                    // A pure insertion consumes no old lines — it sits *after* hunk.oldStart, per
+                    // the same "anchor is the line before which/after which" convention this file
+                    // already uses for deletionAnchors — so an old line at or before that anchor
+                    // is untouched by it, and only strictly-later lines shift by its offset.
+                    if (oldLine <= hunk.oldStart) return oldLine + offset
+                } else {
+                    if (oldLine < hunk.oldStart) return oldLine + offset
+                    if (oldLine < hunk.oldStart + hunk.oldCount) return null
+                }
+                offset += hunk.newCount - hunk.oldCount
+            }
+            return oldLine + offset
+        }
+    }
+
+    /**
+     * [diffInfoByPath] describes each file as it looked immediately after [hash] was committed —
+     * accurate then, but only coincidentally correct now if nothing since has shifted lines
+     * above or within it. This remaps every line number in it onto the file's *current*
+     * working-tree state by diffing [hash] straight against the working tree and walking that
+     * diff's hunks: a line [hash] touched that a later commit (or an uncommitted edit) has since
+     * further changed has no honest current position and is dropped, rather than risk painting
+     * it somewhere wrong.
+     */
+    private fun remapToCurrent(repoRoot: File, hash: String, diffInfoByPath: Map<String, FileDiffInfo>): Map<String, FileDiffInfo> {
+        if (diffInfoByPath.isEmpty()) return diffInfoByPath
+        val patch = runGitDiffToWorkingTree(repoRoot, hash) ?: return emptyMap()
+        val hunksByPath = parseHunkRangesByOldPath(patch)
+        val result = mutableMapOf<String, FileDiffInfo>()
+        for ((path, info) in diffInfoByPath) {
+            // Not in the hash-vs-now diff at all means either "unchanged since hash" (still on
+            // disk, so an identity mapping — no hunks — is correct) or "gone since hash" (can't
+            // be mapped anywhere, so drop it rather than guess).
+            val hunks = hunksByPath[path] ?: if (File(repoRoot, path).exists()) emptyList() else null
+            if (hunks == null) continue
+            val mapper = LineMapper(hunks)
+            val changedLines = info.changedLines.mapNotNullTo(mutableSetOf(), mapper::mapOldToNew)
+            val deletionAnchors = remapAnchors(info.deletionAnchors, mapper::mapOldToNew)
+            val modificationAnchors = remapAnchors(info.modificationAnchors, mapper::mapOldToNew)
+            if (changedLines.isNotEmpty() || deletionAnchors.isNotEmpty() || modificationAnchors.isNotEmpty()) {
+                result[path] = FileDiffInfo(changedLines, deletionAnchors, modificationAnchors)
+            }
+        }
+        return result
+    }
+
+    private fun remapAnchors(anchors: Map<Int, DeletedLines>, mapper: (Int) -> Int?): Map<Int, DeletedLines> {
+        val result = mutableMapOf<Int, DeletedLines>()
+        for ((anchor, deleted) in anchors) {
+            val newAnchor = mapper(anchor) ?: continue
+            mergeAnchors(result, mapOf(newAnchor to deleted))
+        }
+        return result
+    }
+
+    private fun runGitDiffToWorkingTree(repoRoot: File, hash: String): String? {
+        return try {
+            // No second revision: compares hash against the working tree (uncommitted edits
+            // included), matching what's actually on disk — and so, modulo an unsaved buffer,
+            // what's in the editor.
+            val process = ProcessBuilder("git", "diff", "--unified=0", hash)
+                .directory(repoRoot)
+                .redirectErrorStream(false)
+                .start()
+            val output = process.inputStream.bufferedReader().readText()
+            val error = process.errorStream.bufferedReader().readText()
+            val finished = process.waitFor(30, TimeUnit.SECONDS)
+            if (!finished) {
+                process.destroyForcibly()
+                LOG.warn("git diff (remap) timed out for commit $hash in $repoRoot")
+                null
+            } else if (process.exitValue() != 0) {
+                LOG.warn("git diff (remap) failed for commit $hash in $repoRoot (exit ${process.exitValue()}): $error")
+                null
+            } else {
+                output
+            }
+        } catch (e: Exception) {
+            LOG.warn("failed to run git diff (remap) for commit $hash in $repoRoot", e)
+            null
+        }
+    }
+
+    /** Hunk ranges keyed by the diff's *old*-side (`---`) path, since that's [hash]'s own path — the coordinate space [diffInfoByPath] is already in. */
+    private fun parseHunkRangesByOldPath(patch: String): Map<String, List<HunkRange>> {
+        val result = mutableMapOf<String, MutableList<HunkRange>>()
+        var currentPath: String? = null
+        for (line in patch.lineSequence()) {
+            when {
+                line.startsWith("--- ") -> {
+                    val raw = line.removePrefix("--- ").trim()
+                    currentPath = when {
+                        raw == "/dev/null" -> null
+                        raw.startsWith("a/") -> raw.removePrefix("a/")
+                        else -> raw
+                    }
+                }
+                line.startsWith("@@ ") -> {
+                    val path = currentPath ?: continue
+                    val match = FULL_HUNK_HEADER.find(line) ?: continue
+                    val oldStart = match.groupValues[1].toIntOrNull() ?: continue
+                    val oldCount = match.groupValues[2].takeIf { it.isNotEmpty() }?.toIntOrNull() ?: 1
+                    val newCount = match.groupValues[4].takeIf { it.isNotEmpty() }?.toIntOrNull() ?: 1
+                    result.getOrPut(path) { mutableListOf() }.add(HunkRange(oldStart, oldCount, newCount))
+                }
+            }
+        }
+        return result
     }
 
     private enum class PendingKind { DELETION, MODIFICATION }

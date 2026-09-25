@@ -12,7 +12,12 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.vcs.log.VcsLogDataKeys
 import java.io.File
 
-/** Opens every file touched by the currently selected commit(s), reusing the same diff parsing as highlighting. */
+/**
+ * Opens every file touched by the currently selected commit(s). Uses
+ * [GitDiffParser.filesTouchedByCommits] rather than [GitDiffParser.changedLinesForCommits] (what
+ * highlighting uses) since this wants literally every file the commit touched, not just the ones
+ * still highlight-worthy after remapping onto the current working tree.
+ */
 class OpenChangedFilesAction : AnAction() {
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
@@ -33,7 +38,7 @@ class OpenChangedFilesAction : AnAction() {
 
         ProgressManager.getInstance().run(object : Task.Backgroundable(project, "Finding Changed Files", true) {
             override fun run(indicator: ProgressIndicator) {
-                val relativePaths = GitDiffParser.changedLinesForCommits(repoRoot, hashStrings).keys
+                val relativePaths = GitDiffParser.filesTouchedByCommits(repoRoot, hashStrings)
                 ApplicationManager.getApplication().invokeLater {
                     if (project.isDisposed) return@invokeLater
                     val fileEditorManager = FileEditorManager.getInstance(project)

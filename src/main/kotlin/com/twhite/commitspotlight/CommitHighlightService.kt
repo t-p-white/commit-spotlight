@@ -384,23 +384,32 @@ class CommitHighlightService(private val project: Project) : Disposable {
         recomputedSplits: Map<Long, RecolorSplit>
     ) {
         val newBatches = mutableListOf<HighlightBatch>()
+        // Tracks whether anything about `batches` actually changes — e.g. every selected commit
+        // was already this exact color, or none of them are highlighted at all — so a redundant
+        // call doesn't force a full re-render of every open editor, tab, and the Git Log table.
+        var changed = false
         for (batch in batches) {
             val recolorSubset = batch.hashes intersect hashesToRecolor
             when {
                 recolorSubset.isEmpty() -> newBatches.add(batch)
-                recolorSubset == batch.hashes -> newBatches.add(batch.copy(color = newColor))
+                recolorSubset == batch.hashes -> {
+                    if (batch.color != newColor) changed = true
+                    newBatches.add(batch.copy(color = newColor))
+                }
                 else -> {
                     val split = recomputedSplits[batch.id]
                     if (split == null) {
                         newBatches.add(batch)
                         continue
                     }
+                    changed = true
                     val remaining = batch.hashes - hashesToRecolor
                     newBatches.add(batch.copy(hashes = remaining, diffInfoByPath = split.remainingDiff))
                     newBatches.add(HighlightBatch(newColor, recolorSubset, split.recoloredDiff, nextBatchId()))
                 }
             }
         }
+        if (!changed) return
         batches.clear()
         batches.addAll(newBatches)
         reapplyAllEditors()
@@ -424,17 +433,23 @@ class CommitHighlightService(private val project: Project) : Disposable {
      */
     fun removeCommitsFromBatches(hashesToRemove: Set<Hash>, recomputedDiffs: Map<Long, Map<String, FileDiffInfo>>) {
         val newBatches = mutableListOf<HighlightBatch>()
+        // See the matching flag in recolorCommits: skips the full re-render below when none of
+        // hashesToRemove actually belonged to any batch (e.g. clearing highlight for a commit
+        // selection that was never highlighted in the first place).
+        var changed = false
         for (batch in batches) {
             val remaining = batch.hashes - hashesToRemove
             when {
-                remaining.isEmpty() -> Unit // drop
+                remaining.isEmpty() -> changed = true // drop
                 remaining.size == batch.hashes.size -> newBatches.add(batch)
                 else -> {
+                    changed = true
                     val newDiff = recomputedDiffs[batch.id] ?: batch.diffInfoByPath
                     newBatches.add(batch.copy(hashes = remaining, diffInfoByPath = newDiff))
                 }
             }
         }
+        if (!changed) return
         batches.clear()
         batches.addAll(newBatches)
         reapplyAllEditors()
@@ -521,7 +536,10 @@ class CommitHighlightService(private val project: Project) : Disposable {
 
         val lineColors = linkedMapOf<Int, HighlightColor>()
         val deletionInfo = linkedMapOf<Int, Pair<HighlightColor, DeletedLines>>()
-        val modificationInfo = linkedMapOf<Int, Pair<HighlightColor, DeletedLines>>()
+        // No color component: unlike a deletion (which draws its own separator/error-stripe
+        // mark in the batch's color), a modification's line is already background-tinted via
+        // lineColors above — this map only ever needs the old text for its "was N lines" pill.
+        val modificationInfo = linkedMapOf<Int, DeletedLines>()
         // Iteration order decides which batch's color/tooltip wins on a line multiple batches
         // touch — the last one processed overwrites earlier ones in the maps below.
         for (batch in orderedBatches()) {
@@ -533,7 +551,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
                 deletionInfo[anchor] = batch.color to deleted
             }
             for ((anchor, oldText) in info.modificationAnchors) {
-                modificationInfo[anchor] = batch.color to oldText
+                modificationInfo[anchor] = oldText
             }
         }
         val invalid = invalidatedLines[file]
@@ -580,7 +598,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
             )
             highlighter.customRenderer = RoundedLineBackgroundRenderer(color.toJBColor())
             highlighter.setErrorStripeMarkColor(color.toJBColor())
-            val oldText = modificationInfo[runStart]?.second
+            val oldText = modificationInfo[runStart]
             highlighter.errorStripeTooltip =
                 if (oldText != null) buildOldTextTooltip(oldText) else "Changed by a highlighted commit"
             tracked.add(TrackedHighlight(markupModel, highlighter))
@@ -649,8 +667,7 @@ class CommitHighlightService(private val project: Project) : Disposable {
             }
         }
 
-        for ((anchor, colorAndOldText) in modificationInfo) {
-            val (_, oldText) = colorAndOldText
+        for ((anchor, oldText) in modificationInfo) {
             val zeroBasedLine = anchor - 1
             if (zeroBasedLine < 0 || zeroBasedLine >= lineCount) continue
 

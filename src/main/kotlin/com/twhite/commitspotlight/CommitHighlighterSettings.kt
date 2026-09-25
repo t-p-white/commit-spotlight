@@ -54,6 +54,10 @@ class CommitHighlighterSettings : PersistentStateComponent<CommitHighlighterSett
     override fun getState(): State = state
 
     override fun loadState(state: State) {
+        // Route through the same clamp the setter applies — a value outside [10, 100] can reach
+        // here from a hand-edited config file or a state persisted by a version with a different
+        // valid range, and should never sit un-coerced until the user happens to touch the UI.
+        state.alphaPercent = state.alphaPercent.coerceIn(10, 100)
         this.state = state
     }
 

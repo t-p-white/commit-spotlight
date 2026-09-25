@@ -66,6 +66,24 @@ object GitDiffParser {
     }
 
     /**
+     * Repo-relative paths touched by any of [commitHashes], read straight from each commit's own
+     * diff with no [remapToCurrent] applied. Deliberately *not* reused by
+     * [changedLinesForCommits]: that function's remap drops a file entirely once nothing about
+     * the commit's changes to it still has an honest current position (e.g. a later commit fully
+     * rewrote the same lines again) — the right behavior for deciding what to *highlight*, but
+     * wrong for a caller (like "Open All Files in Commit") that wants literally every file the
+     * commit touched, whether or not any of its lines are still highlight-worthy today.
+     */
+    fun filesTouchedByCommits(repoRoot: File, commitHashes: List<String>): Set<String> {
+        val paths = mutableSetOf<String>()
+        for (hash in commitHashes) {
+            val patch = runGitShow(repoRoot, hash) ?: continue
+            paths.addAll(parsePatch(patch).keys)
+        }
+        return paths
+    }
+
+    /**
      * Returns the subset of [commitHashes] that no longer resolve to an object in the repo —
      * e.g. dropped or rewritten by an interactive rebase. Used to clear stale highlights rather
      * than let them silently point at history that no longer exists.
@@ -144,7 +162,11 @@ object GitDiffParser {
                 LOG.warn("git show failed for commit $hash in $repoRoot (exit ${process.exitValue()}): $error")
                 null
             } else {
-                if (output.contains("@@@")) {
+                // A combined-diff hunk header (used for merge commits) always starts its own
+                // line with "@@@" — checked at line-start rather than via a substring search
+                // anywhere in the output, since an ordinary added/removed line's *content* could
+                // otherwise coincidentally contain "@@@" and falsely trip this check.
+                if (output.lineSequence().any { it.startsWith("@@@") }) {
                     LOG.warn("commit $hash is a merge commit; its combined diff format isn't parsed, so it won't contribute any highlights")
                 }
                 output
@@ -319,13 +341,20 @@ object GitDiffParser {
         }
 
         for (line in patch.lineSequence()) {
-            if (pendingRemaining > 0 && line.startsWith("-") && !line.startsWith("--- ")) {
-                pendingLines.add(line.removePrefix("-"))
-                pendingRemaining--
-                if (pendingRemaining == 0) flushPending()
-                continue
-            } else if (pendingRemaining > 0) {
-                flushPending()
+            if (pendingRemaining > 0) {
+                // Inside a hunk body, git guarantees exactly oldCount '-'-prefixed removed lines
+                // immediately follow the header before anything else — so this is always a
+                // removed line here, even when its content itself starts with "-- " (a common
+                // line-comment marker in SQL/Lua/Haskell/Ada/AppleScript) and would otherwise
+                // read as "--- ", colliding with the unrelated "--- <path>" file-header prefix.
+                if (line.startsWith("-")) {
+                    pendingLines.add(line.removePrefix("-"))
+                    pendingRemaining--
+                    if (pendingRemaining == 0) flushPending()
+                    continue
+                } else {
+                    flushPending()
+                }
             }
 
             when {

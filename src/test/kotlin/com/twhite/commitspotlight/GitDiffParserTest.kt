@@ -54,6 +54,39 @@ class GitDiffParserTest {
     }
 
     @Test
+    fun `a deleted line starting with two dashes and a space is captured, not mistaken for a diff file header`() {
+        // Regression test: a removed line whose own text starts with "-- " (a common line-comment
+        // marker in SQL/Lua/Haskell/Ada/AppleScript) renders in the diff as "--- <text>", which
+        // collides with the unrelated "--- <path>" file-header prefix unless the parser only
+        // checks for that header outside of an active hunk body.
+        writeFile("a.txt", "one\n-- comment\nthree\n")
+        commitAll("initial")
+        writeFile("a.txt", "one\nthree\n")
+        val hash = commitAll("delete comment line")
+
+        val info = GitDiffParser.changedLinesForCommits(repo, listOf(hash))["a.txt"]!!
+        val deletion = info.deletionAnchors[1]
+
+        assertNotNull(deletion)
+        assertEquals(listOf("-- comment"), deletion!!.lines)
+    }
+
+    @Test
+    fun `a modified line whose old text starts with two dashes and a space is captured`() {
+        writeFile("a.txt", "one\n-- comment\nthree\n")
+        commitAll("initial")
+        writeFile("a.txt", "one\n-- updated comment\nthree\n")
+        val hash = commitAll("modify comment line")
+
+        val info = GitDiffParser.changedLinesForCommits(repo, listOf(hash))["a.txt"]!!
+        val modification = info.modificationAnchors[2]
+
+        assertEquals(setOf(2), info.changedLines)
+        assertNotNull(modification)
+        assertEquals(listOf("-- comment"), modification!!.lines)
+    }
+
+    @Test
     fun `deletion at start of file uses anchor zero`() {
         writeFile("a.txt", "one\ntwo\nthree\n")
         commitAll("initial")
@@ -276,6 +309,45 @@ class GitDiffParserTest {
         // "three" and "four" keep their original positions — the insertion coming *after* them
         // must not shift them forward by its own line count.
         assertEquals(setOf(3, 4), info.changedLines)
+    }
+
+    // --- filesTouchedByCommits: raw file list, independent of remapToCurrent's filtering ---
+
+    @Test
+    fun `filesTouchedByCommits includes a file even after a later commit fully overwrites the change`() {
+        // Same history as "a line is dropped once a later commit further changes it", where
+        // changedLinesForCommits (correctly, for highlighting) drops "a.txt" entirely — but
+        // "Open All Files in Commit" still needs to open it, since `hash` did touch it.
+        writeFile("a.txt", "one\ntwo\n")
+        commitAll("initial")
+        writeFile("a.txt", "one\ntwo\nthree\n")
+        val hash = commitAll("add three")
+        writeFile("a.txt", "one\ntwo\nTHREE\n")
+        commitAll("someone else edits three")
+
+        assertEquals(emptySet<Int>(), GitDiffParser.changedLinesForCommits(repo, listOf(hash))["a.txt"]?.changedLines ?: emptySet<Int>())
+        assertEquals(setOf("a.txt"), GitDiffParser.filesTouchedByCommits(repo, listOf(hash)))
+    }
+
+    @Test
+    fun `filesTouchedByCommits unions paths across multiple commits`() {
+        writeFile("a.txt", "a1\n")
+        writeFile("b.txt", "b1\n")
+        commitAll("initial")
+        writeFile("a.txt", "a1\na2\n")
+        val hash1 = commitAll("touch a")
+        writeFile("b.txt", "b1\nb2\n")
+        val hash2 = commitAll("touch b")
+
+        assertEquals(setOf("a.txt", "b.txt"), GitDiffParser.filesTouchedByCommits(repo, listOf(hash1, hash2)))
+    }
+
+    @Test
+    fun `filesTouchedByCommits returns empty set for an unresolvable commit hash`() {
+        writeFile("a.txt", "one\n")
+        commitAll("initial")
+
+        assertTrue(GitDiffParser.filesTouchedByCommits(repo, listOf("0".repeat(40))).isEmpty())
     }
 
     private fun writeFile(relativePath: String, content: String) {

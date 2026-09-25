@@ -7,6 +7,21 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-09-25
+
+### Fixed
+- A deleted or modified line whose own text started with `-- ` (a common line-comment marker in
+  SQL, Lua, Haskell, Ada, and AppleScript) could be mistaken for an unrelated diff file-header
+  line, silently dropping that line from the highlight.
+- "Open All Files in Commit" could silently skip a file if a later commit fully overwrote the
+  selected commit's changes to it, since it relied on the same current-state filtering
+  highlighting uses — right for deciding what to highlight, wrong for "every file this commit
+  touched." It now opens every touched file regardless.
+- A highlight opacity loaded from a hand-edited (or otherwise out-of-range) settings file could
+  sit un-clamped until the opacity menu was next touched.
+- An ordinary added or removed line whose content happened to contain `@@@` could be
+  misidentified as an unsupported merge-commit diff.
+
 ## [1.0.5] - 2026-09-24
 
 ### Added
@@ -81,7 +96,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - "Open All Files in Commit" action.
 - Selective and full highlight clearing.
 
-[Unreleased]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.5...HEAD
+[Unreleased]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.6...HEAD
+[1.0.6]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.5...v1.0.6
 [1.0.5]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.4...v1.0.5
 [1.0.4]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/t-p-white/commit-spotlight/compare/v1.0.2...v1.0.3
